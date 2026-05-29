@@ -72,6 +72,16 @@ python3 scripts/ingest.py stats
 
 注意：`x_curl/*.curl` 内的登录态可能过期；若抓取返回空或报错，重新从浏览器复制 curl 后再运行。
 
+## Codex Skill
+
+本仓库内置了可开源分发的 Codex skill：`skills/serenity-stock-scorer`。它会基于本地 Serenity SQLite 快照，对单个 ticker 输出 0-100 的 Serenity 语料信号分。
+
+```bash
+python3 skills/serenity-stock-scorer/scripts/score_serenity_stock.py NVDA --pretty
+```
+
+该 skill 默认查找 `data/serenity.sqlite`；如果数据库在其他位置，可以传 `--db /path/to/serenity.sqlite` 或设置 `SERENITY_DB_PATH`。
+
 ---
 
 # Serenity Signal Dashboard (English)
@@ -147,3 +157,13 @@ python3 scripts/ingest.py stats
 ```
 
 If X fetching returns empty or invalid responses, copy fresh curl commands from Chrome and run the ingestion again.
+
+## Codex Skill
+
+This repo includes an open-source-ready Codex skill at `skills/serenity-stock-scorer`. It scores a single ticker from the local Serenity SQLite snapshot as a 0-100 Serenity corpus signal.
+
+```bash
+python3 skills/serenity-stock-scorer/scripts/score_serenity_stock.py NVDA --pretty
+```
+
+The skill looks for `data/serenity.sqlite` by default. If your database lives elsewhere, pass `--db /path/to/serenity.sqlite` or set `SERENITY_DB_PATH`.
