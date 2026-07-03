@@ -71,7 +71,9 @@ class Handler(SimpleHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             post_data = self.rfile.read(content_length).decode("utf-8")
             try:
-                payload = json.loads(post_data)
+                payload = {}
+                if content_length > 0 and post_data.strip():
+                    payload = json.loads(post_data)
                 response_payload = self.route_post_api(parsed.path, payload)
                 self.send_json(response_payload)
             except Exception as exc:
