@@ -1,0 +1,47 @@
+{
+  "ticker": "TSM",
+  "company": "Taiwan Semiconductor Manufacturing Co.",
+  "market": "Taiwan / US ADR",
+  "factors": {
+    "demand_inflection": 4.5,
+    "architecture_coupling": 4.8,
+    "chokepoint_severity": 5.0,
+    "supplier_concentration": 4.2,
+    "expansion_difficulty": 4.5,
+    "evidence_quality": 4.0,
+    "valuation_disconnect": 3.0,
+    "catalyst_timing": 4.5
+  },
+  "penalties": {
+    "dilution_financing": 0.5,
+    "governance": 0,
+    "geopolitics": 3.5,
+    "liquidity": 0,
+    "hype_risk": 2.0,
+    "accounting_quality": 0,
+    "cyclicality": 1.5,
+    "alternative_design_risk": 1.0
+  },
+  "evidence": [
+    {
+      "claim": "TSMC dominates over 90% of advanced node manufacturing (<5nm) worldwide.",
+      "source": "TrendForce Research",
+      "strength": "primary"
+    },
+    {
+      "claim": "EUV supplier concentration remains high with ASML as the sole provider.",
+      "source": "ASML Annual Reports",
+      "strength": "analysis"
+    },
+    {
+      "claim": "Advanced packaging (CoWoS) capacity is the current bottleneck for AI accelerators.",
+      "source": "NVIDIA Supply Chain Intelligence",
+      "strength": "primary"
+    }
+  ],
+  "what_could_weaken_view": [
+    "Geopolitical escalation in the Taiwan Strait disrupts fabs.",
+    "Rapid progress of Intel 18A or Samsung Foundry captures substantial market share.",
+    "Alternative packaging technologies bypass the need for CoWoS."
+  ]
+}

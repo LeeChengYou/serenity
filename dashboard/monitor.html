@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Serenity Signal 系統與 AI 監控面板</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;600;700&family=Outfit:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #f4f3ef;
+      --ink: #182019;
+      --muted: #626c64;
+      --line: rgba(24, 32, 25, 0.15);
+      --green: #1f7a4f;
+      --blue: #2f6690;
+      --red: #c94c4c;
+      --glow: #c3f73a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      padding: 30px;
+      line-height: 1.5;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid var(--ink);
+      padding-bottom: 15px;
+      margin-bottom: 25px;
+    }
+    h1 {
+      font-family: "Bebas Neue", sans-serif;
+      font-size: 42px;
+      letter-spacing: 0.05em;
+    }
+    .back-link {
+      font-family: "Outfit", sans-serif;
+      font-weight: 600;
+      color: var(--green);
+      text-decoration: none;
+      border: 1.5px solid var(--green);
+      padding: 8px 16px;
+      border-radius: 999px;
+      transition: all 0.2s;
+    }
+    .back-link:hover {
+      background: var(--green);
+      color: var(--paper);
+    }
+    
+    /* KPI Cards */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+    .kpi-card {
+      background: rgba(255, 255, 255, 0.6);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+    }
+    .kpi-card h3 {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .kpi-card .value {
+      font-family: "Bebas Neue", sans-serif;
+      font-size: 36px;
+      color: var(--ink);
+      line-height: 1;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: bold;
+      border-radius: 6px;
+      text-transform: uppercase;
+      margin-top: 5px;
+    }
+    .badge.success { background: rgba(31, 122, 79, 0.15); color: var(--green); border: 1px solid var(--green); }
+    .badge.danger { background: rgba(201, 76, 76, 0.15); color: var(--red); border: 1px solid var(--red); }
+    .badge.info { background: rgba(47, 102, 144, 0.15); color: var(--blue); border: 1px solid var(--blue); }
+
+    /* Layout panels */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 25px;
+    }
+    
+    .panel {
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 24px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.03);
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1.5px solid var(--line);
+      padding-bottom: 12px;
+      margin-bottom: 20px;
+    }
+    .panel-head h2 {
+      font-family: "Outfit", sans-serif;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .refresh-btn {
+      background: var(--ink);
+      color: var(--paper);
+      border: none;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 13px;
+      transition: opacity 0.2s;
+    }
+    .refresh-btn:hover { opacity: 0.9; }
+
+    /* Transactions list */
+    .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      max-height: 800px;
+      overflow-y: auto;
+      padding-right: 5px;
+    }
+    .log-item {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #ffffff;
+      overflow: hidden;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.01);
+    }
+    .log-header {
+      background: rgba(24, 32, 25, 0.03);
+      padding: 10px 15px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .log-time { color: var(--muted); font-weight: 600; }
+    .log-meta-group { display: flex; gap: 10px; font-family: ui-monospace, monospace; }
+    .log-meta-tag { background: rgba(0,0,0,0.05); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+    .log-body {
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .log-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .log-section h4 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .log-content-box {
+      background: rgba(24, 32, 25, 0.02);
+      border: 1px solid rgba(24, 32, 25, 0.08);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .log-content-box.system-ins {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--muted);
+      max-height: 120px;
+    }
+    .no-logs {
+      text-align: center;
+      padding: 50px;
+      color: var(--muted);
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Serenity System & AI Monitor</h1>
+      <p style="color: var(--muted); font-size: 14px;">即時監控系統狀態、模型 API 呼叫、延遲與 Token 消耗</p>
+    </div>
+    <a href="/" class="back-link">← 返回看板</a>
+  </header>
+
+  <!-- KPI summary -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <h3>系統狀態 (Server)</h3>
+      <div class="value" id="serverState">RUNNING</div>
+      <span class="badge success">Active</span>
+    </div>
+    <div class="kpi-card">
+      <h3>資料庫指標 (DB size)</h3>
+      <div id="dbStats" style="font-size: 13px; margin-top: 5px;">
+        載入中...
+      </div>
+    </div>
+    <div class="kpi-card">
+      <h3>金鑰配置 (API Key)</h3>
+      <div class="value" id="apiKeyStatus">-</div>
+      <span id="apiKeyBadge" class="badge">Checking...</span>
+    </div>
+    <div class="kpi-card">
+      <h3>預設對話模型</h3>
+      <div class="value" id="defaultModel" style="font-size: 24px; font-family: ui-monospace, monospace; margin-top: 6px;">-</div>
+    </div>
+  </div>
+
+  <div class="main-grid">
+    <!-- AI Call Logger Panel -->
+    <div class="panel">
+      <div class="panel-head">
+        <h2>AI 模型內部呼叫日誌 (最前 100 筆)</h2>
+        <div>
+          <button class="refresh-btn" onclick="fetchLogs()">🔄 重新整理</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 20px; gap: 10px;">
+        <div style="background: rgba(0,0,0,0.02); padding: 10px; border-radius: 12px; text-align: center; border: 1px solid var(--line);">
+          <div style="font-size: 11px; color: var(--muted); text-transform: uppercase;">總呼叫次數</div>
+          <div style="font-size: 22px; font-family: 'Bebas Neue';" id="statTotalCalls">0</div>
+        </div>
+        <div style="background: rgba(0,0,0,0.02); padding: 10px; border-radius: 12px; text-align: center; border: 1px solid var(--line);">
+          <div style="font-size: 11px; color: var(--muted); text-transform: uppercase;">平均延遲 (Latency)</div>
+          <div style="font-size: 22px; font-family: 'Bebas Neue';" id="statAvgLatency">0 ms</div>
+        </div>
+        <div style="background: rgba(0,0,0,0.02); padding: 10px; border-radius: 12px; text-align: center; border: 1px solid var(--line);">
+          <div style="font-size: 11px; color: var(--muted); text-transform: uppercase;">累積消耗 Tokens</div>
+          <div style="font-size: 22px; font-family: 'Bebas Neue';" id="statTotalTokens">0</div>
+        </div>
+        <div style="background: rgba(0,0,0,0.02); padding: 10px; border-radius: 12px; text-align: center; border: 1px solid var(--line);">
+          <div style="font-size: 11px; color: var(--muted); text-transform: uppercase;">預估成本 (USD)</div>
+          <div style="font-size: 22px; font-family: 'Bebas Neue'; color: var(--green);" id="statCost">$0.00</div>
+        </div>
+      </div>
+      <div id="logList" class="log-list">
+        <!-- Logs loaded here -->
+        <div class="no-logs">載入中...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function init() {
+      await fetchConfig();
+      await fetchLogs();
+      setInterval(fetchLogs, 8000); // Auto refresh every 8 seconds
+    }
+
+    async function fetchConfig() {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        
+        // API key badge
+        const badge = document.getElementById('apiKeyBadge');
+        const statusText = document.getElementById('apiKeyStatus');
+        if (data.has_key) {
+          statusText.textContent = 'ACTIVE';
+          badge.textContent = '金鑰已載入';
+          badge.className = 'badge success';
+        } else {
+          statusText.textContent = 'MISSING';
+          badge.textContent = '金鑰未配置';
+          badge.className = 'badge danger';
+        }
+
+        // Default model
+        document.getElementById('defaultModel').textContent = data.default_model || '-';
+
+        // Fetch DB summary stats
+        const sumRes = await fetch('/api/summary');
+        const sumData = await sumRes.json();
+        const dbStats = document.getElementById('dbStats');
+        if (sumData.stats) {
+          dbStats.innerHTML = `
+            📅 最新貼文：<b>${sumData.stats.latest_mention ? new Date(sumData.stats.latest_mention).toLocaleDateString() : '-'}</b><br>
+            💬 X 社群貼文：<b>${sumData.stats.tweets || 0} 筆</b><br>
+            🏷️ 追蹤 Symbol：<b>${sumData.stats.symbols || 0} 個</b>
+          `;
+        }
+      } catch (err) {
+        console.error("Config fetch error", err);
+      }
+    }
+
+    async function fetchLogs() {
+      try {
+        const res = await fetch('/api/monitor');
+        const data = await res.json();
+        const logs = data.logs || [];
+        
+        // Render stats
+        document.getElementById('statTotalCalls').textContent = logs.length;
+        
+        let totalLatency = 0;
+        let totalTokens = 0;
+        let totalPromptTokens = 0;
+        let totalCompletionTokens = 0;
+        
+        logs.forEach(l => {
+          totalLatency += l.latency_ms || 0;
+          totalTokens += l.total_tokens || 0;
+          totalPromptTokens += l.prompt_tokens || 0;
+          totalCompletionTokens += l.completion_tokens || 0;
+        });
+        
+        const avgLat = logs.length ? Math.round(totalLatency / logs.length) : 0;
+        document.getElementById('statAvgLatency').textContent = `${avgLat} ms`;
+        document.getElementById('statTotalTokens').textContent = totalTokens.toLocaleString();
+        
+        // Gemini 2.5 Flash Cost calculation ($0.075 / 1M input tokens, $0.30 / 1M output tokens)
+        const costVal = (totalPromptTokens * 0.075 + totalCompletionTokens * 0.30) / 1000000;
+        document.getElementById('statCost').textContent = `$${costVal.toFixed(5)}`;
+
+        // Render list
+        const listContainer = document.getElementById('logList');
+        if (logs.length === 0) {
+          listContainer.innerHTML = `<div class="no-logs">目前尚無模型呼叫交易日誌。</div>`;
+          return;
+        }
+
+        listContainer.innerHTML = logs.map(l => {
+          const dateStr = new Date(l.timestamp).toLocaleString('zh-TW');
+          return `
+            <div class="log-item">
+              <div class="log-header">
+                <span class="log-time">🕒 ${dateStr}</span>
+                <div class="log-meta-group">
+                  <span class="log-meta-tag" style="color: var(--blue);">🤖 ${l.model}</span>
+                  <span class="log-meta-tag" style="color: var(--green);">⚡ ${l.latency_ms} ms</span>
+                  <span class="log-meta-tag" style="font-weight:bold;">🎫 Total: ${l.total_tokens} (I: ${l.prompt_tokens} / O: ${l.completion_tokens})</span>
+                </div>
+              </div>
+              <div class="log-body">
+                <div class="log-section">
+                  <h4>💡 用戶提問 Prompt (User Input)</h4>
+                  <div class="log-content-box">${escapeHtml(l.prompt)}</div>
+                </div>
+                <div class="log-section">
+                  <h4>🤖 模型生成輸出 (Model Response)</h4>
+                  <div class="log-content-box" style="background: rgba(31, 122, 79, 0.01); border-left: 3px solid var(--green);">${escapeHtml(l.response)}</div>
+                </div>
+                <div class="log-section">
+                  <h4>⚙️ 注入的 System Instruction & RAG 長度</h4>
+                  <div class="log-content-box system-ins">注入之 Serenity 供應鏈卡點分析法規與 sqlite 資料庫快照長度約為 <b>${l.system_instruction_len || 0} 字元</b></div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        console.error("Logs fetch error", err);
+      }
+    }
+
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>

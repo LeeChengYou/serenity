@@ -81,7 +81,9 @@ def connect():
 
 
 def parse_curl(path: Path):
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    # Normalize Windows cmd style cURL by stripping carets
+    text = text.replace('^', '')
     args = [arg for arg in shlex.split(text, posix=True) if arg.strip()]
     if not args or args[0] != "curl":
         raise ValueError(f"{path} is not a curl command")
@@ -237,7 +239,7 @@ def fetch_x(max_pages=20, pause=0.8):
                 print(f"  stop {source}: {exc}", file=sys.stderr)
                 break
             raw_path = RAW_DIR / f"{source}_{page + 1}.json"
-            raw_path.write_text(body)
+            raw_path.write_text(body, encoding="utf-8")
             n = ingest_page(con, source, body, data, cursor)
             con.commit()
             total += n

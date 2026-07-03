@@ -1,9 +1,126 @@
 let state = { symbols: [], active: null, filter: 'all', chart: null };
 const $ = (id) => document.getElementById(id);
-const fmtDate = (v) => v ? new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
+const fmtDate = (v) => v ? new Date(v).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
 const money = (v) => v == null ? '-' : `$${Number(v).toFixed(2)}`;
 const clip = (s, n = 220) => (s || '').length > n ? `${s.slice(0, n)}...` : (s || '');
 const dateOnly = (v) => (v || '').slice(0, 10);
+
+// Tab switching inside detail panel
+window.switchDetailTab = function(tab) {
+  const chartBtn = $('tabChartBtn');
+  const scoreBtn = $('tabScorecardBtn');
+  const chartView = $('chartView');
+  const scoreView = $('scorecardView');
+  
+  if (tab === 'chart') {
+    chartBtn.classList.add('active');
+    scoreBtn.classList.remove('active');
+    chartView.style.display = 'flex';
+    scoreView.style.display = 'none';
+  } else {
+    chartBtn.classList.remove('active');
+    scoreBtn.classList.add('active');
+    chartView.style.display = 'none';
+    scoreView.style.display = 'block';
+    
+    // Render radar chart now that the container is visible!
+    if (state.active) {
+      renderScorecard(state.active, state.scorecardData);
+    }
+  }
+};
+
+let scorecardChart = null;
+
+function renderScorecard(symbol, card) {
+  const placeholder = $('scorecardPlaceholder');
+  const content = $('scorecardContent');
+  
+  $('scorecardCmdHelp').textContent = `python scripts/integrated_scorer.py ${symbol} --scorecard data/${symbol.toLowerCase()}_scorecard.json`;
+  
+  if (!card || !card.symbol) {
+    placeholder.style.display = 'flex';
+    content.style.display = 'none';
+    return;
+  }
+  
+  placeholder.style.display = 'none';
+  content.style.display = 'grid';
+  
+  const badge = $('scorecardBadge');
+  badge.textContent = `Score: ${card.final_score} / 100`;
+  if (card.final_score >= 85) {
+    badge.className = 'badge success';
+  } else if (card.final_score >= 70) {
+    badge.className = 'badge info';
+  } else {
+    badge.className = 'badge';
+  }
+  
+  $('scorecardVerdict').textContent = card.verdict || '';
+  $('scorecardMeta').innerHTML = `
+    🏢 公司名稱：<b>${card.company || symbol}</b> | 
+    🌍 市場分類：<b>${card.market || '-'}</b><br>
+    📅 評分更新：<b>${card.updated_at ? new Date(card.updated_at).toLocaleDateString() : '-'}</b>
+  `;
+  
+  const weaknesses = card.kill_switches || [];
+  $('scorecardWeakness').innerHTML = weaknesses.map(w => `<li>${escapeHtml(w)}</li>`).join('') || '<li>無特殊削弱因素紀錄</li>';
+  
+  const evidence = card.evidence || [];
+  $('scorecardEvidence').innerHTML = evidence.map(ev => {
+    const claim = ev.claim || '';
+    const source = ev.source || '';
+    const strength = ev.strength || 'weak';
+    return `<li><b>[${strength}]</b> ${escapeHtml(claim)} <i>(${escapeHtml(source)})</i></li>`;
+  }).join('') || '<li>無證據 notes 紀錄</li>';
+  
+  const factors = card.factor_details || {};
+  const labels = ['需求拐點', '架構耦合', '瓶頸嚴重性', '供應商集中', '擴產難度', '證據品質', '估值落差', '催化劑時機'];
+  const keys = ['demand_inflection', 'architecture_coupling', 'chokepoint_severity', 'supplier_concentration', 'expansion_difficulty', 'evidence_quality', 'valuation_disconnect', 'catalyst_timing'];
+  
+  const datasetData = keys.map(k => (factors[k] ? factors[k].rating : 0));
+  
+  const ctx = $('scorecardRadar');
+  if (scorecardChart) scorecardChart.destroy();
+  
+  scorecardChart = new Chart(ctx, {
+    type: 'radar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: '因素評分 (0-5)',
+        data: datasetData,
+        backgroundColor: 'rgba(31, 122, 79, 0.15)',
+        borderColor: '#1f7a4f',
+        borderWidth: 2,
+        pointBackgroundColor: '#1f7a4f',
+        pointBorderColor: '#fff',
+        pointRadius: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        r: {
+          angleLines: { color: 'rgba(24, 32, 25, 0.08)' },
+          grid: { color: 'rgba(24, 32, 25, 0.08)' },
+          suggestedMin: 0,
+          suggestedMax: 5,
+          ticks: { stepSize: 1, display: false },
+          pointLabels: {
+            font: { size: 10, weight: 'bold' },
+            color: '#182019'
+          }
+        }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+}
 
 function wrapTooltipText(text, maxChars = 54, maxLines = 9) {
   const lines = [];
@@ -40,6 +157,23 @@ async function json(url) {
 }
 
 async function init() {
+  try {
+    const config = await json('/api/config');
+    if (config.default_model) {
+      const select = $('chatModel');
+      const hasOption = Array.from(select.options).some(opt => opt.value === config.default_model);
+      if (hasOption) {
+        select.value = config.default_model;
+      } else {
+        select.value = 'custom';
+        const customInput = $('customModelInput');
+        customInput.style.display = 'inline-block';
+        customInput.value = config.default_model;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load backend config:", err);
+  }
   const summary = await json('/api/summary');
   state.symbols = summary.symbols || [];
   renderKpis(summary.stats || {});
@@ -51,7 +185,7 @@ async function init() {
 
 function renderKpis(s) {
   const items = [
-    ['tweets', '帖子入库'], ['mentions', 'symbol 提及'], ['symbols', '唯一 symbol'], ['priced_symbols', '已下载价格'], ['latest_mention', '最新提及']
+    ['tweets', '貼文入庫'], ['mentions', 'Symbol 提及'], ['symbols', '唯一 Symbol'], ['priced_symbols', '已下載價格'], ['latest_mention', '最新提及']
   ];
   $('kpis').innerHTML = items.map(([k, label]) => `
     <div class="kpi"><b>${k === 'latest_mention' ? fmtDate(s[k]) : (s[k] ?? 0)}</b><span>${label}</span></div>
@@ -73,7 +207,7 @@ function renderSymbols() {
     <button class="symbol-row ${state.active === s.symbol ? 'active' : ''}" data-symbol="${s.symbol}">
       <span class="ticker">${s.symbol}</span>
       <span><b>${s.mention_count}</b> mentions<br><span class="tiny">latest ${fmtDate(s.latest_mention)}</span></span>
-      <span class="badge">${s.has_prices ? money(s.last_close) : 'no price'}</span>
+      <span class="badge">${s.has_prices ? money(s.last_close) : '無價格'}</span>
     </button>
   `).join('');
   document.querySelectorAll('.symbol-row').forEach(btn => btn.onclick = () => selectSymbol(btn.dataset.symbol));
@@ -93,6 +227,19 @@ async function selectSymbol(symbol) {
   ].map(x => `<span>${x}</span>`).join('');
   $('neighbors').innerHTML = (data.neighbors || []).slice(0, 12).map(n => `<span>${n.symbol} x${n.count}</span>`).join('');
   renderChart(data);
+  
+  // Fetch scorecard info but do not render immediately if hidden
+  try {
+    state.scorecardData = await json(`/api/scorecard/${encodeURIComponent(symbol)}`);
+  } catch (err) {
+    console.error("Failed to load scorecard:", err);
+    state.scorecardData = null;
+  }
+  
+  // If the scorecard tab is currently active, render it now!
+  if ($('tabScorecardBtn').classList.contains('active')) {
+    renderScorecard(symbol, state.scorecardData);
+  }
 }
 
 function renderChart(data) {
@@ -179,4 +326,111 @@ document.querySelectorAll('.tabs button').forEach(btn => btn.onclick = () => {
   renderSymbols();
 });
 $('symbolSearch').addEventListener('input', renderSymbols);
+
+// === AI Chat panel logic ===
+state.chatHistory = [];
+
+function appendChatMessage(role, text) {
+  const container = $('chatMessages');
+  const msgEl = document.createElement('div');
+  msgEl.className = `msg ${role}`;
+  
+  if (role === 'model' || role === 'system') {
+    // Process markdown linebreaks and basic bold styling safely
+    let htmlContent = escapeHtml(text)
+      .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+      .replace(/`(.*?)`/g, '<code>$1</code>')
+      .replace(/\n/g, '<br>');
+    msgEl.innerHTML = htmlContent;
+  } else {
+    msgEl.textContent = text;
+  }
+  
+  container.appendChild(msgEl);
+  container.scrollTop = container.scrollHeight;
+}
+
+window.clickSampleQuestion = function(text) {
+  $('chatInput').value = text;
+  sendChatMessage();
+};
+
+async function sendChatMessage() {
+  const input = $('chatInput');
+  const sendBtn = $('chatSend');
+  const text = input.value.trim();
+  if (!text) return;
+  
+  input.value = '';
+  input.disabled = true;
+  sendBtn.disabled = true;
+  
+  appendChatMessage('user', text);
+  state.chatHistory.push({ role: 'user', content: text });
+  
+  const loadingEl = document.createElement('div');
+  loadingEl.className = 'msg system loading';
+  loadingEl.textContent = 'Serenity 正在分析中...';
+  $('chatMessages').appendChild(loadingEl);
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  
+  try {
+    const selectVal = $('chatModel').value;
+    const modelName = selectVal === 'custom' ? $('customModelInput').value.trim() || 'gemini-2.5-flash' : selectVal;
+    
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: state.chatHistory, model: modelName }),
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    loadingEl.remove();
+    
+    if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+    const data = await res.json();
+    
+    if (data.error) {
+      appendChatMessage('system', `錯誤：${data.error}`);
+    } else {
+      const reply = data.response || 'AI 未能給出有效回覆。';
+      appendChatMessage('model', reply);
+      state.chatHistory.push({ role: 'model', content: reply });
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    loadingEl.remove();
+    if (err.name === 'AbortError') {
+      appendChatMessage('system', `請求逾時（已過 45 秒未響應）。已自動釋放對話欄，請嘗試重新發送或切換為 Gemini 2.5 Flash。`);
+    } else {
+      appendChatMessage('system', `連線錯誤：${err.message}`);
+    }
+  } finally {
+    input.disabled = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+$('chatSend').onclick = sendChatMessage;
+$('chatInput').onkeydown = (e) => {
+  if (e.key === 'Enter') {
+    sendChatMessage();
+  }
+};
+
+$('chatModel').addEventListener('change', (e) => {
+  const customInput = $('customModelInput');
+  if (e.target.value === 'custom') {
+    customInput.style.display = 'inline-block';
+    customInput.focus();
+  } else {
+    customInput.style.display = 'none';
+  }
+});
+
 init().catch(err => document.body.insertAdjacentHTML('afterbegin', `<pre>${escapeHtml(err.message)}</pre>`));
