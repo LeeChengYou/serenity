@@ -6,6 +6,9 @@ import os
 import re
 import urllib.request
 import time
+import threading
+import subprocess
+import sys
 from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -376,11 +379,36 @@ def symbol_payload(con, symbol):
     return {"symbol": symbol, "prices": prices, "mentions": mentions, "neighbors": neighbors}
 
 
+def run_background_ingest():
+    # Wait 10 seconds after server starts
+    time.sleep(10)
+    while True:
+        try:
+            print("[Scheduler] Starting automatic incremental price and X fetch...")
+            interpreter = sys.executable or "python"
+            script_path = ROOT / "scripts" / "ingest.py"
+            res = subprocess.run([interpreter, str(script_path), "prices"], capture_output=True, text=True)
+            if res.returncode == 0:
+                print("[Scheduler] Automatic incremental price update completed successfully.")
+            else:
+                print(f"[Scheduler] Price update returned code {res.returncode}. Stderr: {res.stderr.strip()}")
+        except Exception as e:
+            print(f"[Scheduler] Background ingest warning: {e}")
+        
+        # Run every 12 hours
+        time.sleep(12 * 3600)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Serve the Serenity dashboard")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
     args = ap.parse_args()
+    
+    # Start background scheduler thread
+    t = threading.Thread(target=run_background_ingest, daemon=True)
+    t.start()
+    
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"dashboard: http://{args.host}:{args.port}")
     server.serve_forever()

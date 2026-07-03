@@ -277,11 +277,26 @@ def fetch_prices(days_back=420, min_mentions=2):
         print("no symbols yet; run fetch-x first")
         return
     today = dt.datetime.now(dt.timezone.utc)
-    start = today - dt.timedelta(days=days_back)
     for symbol in symbols:
         try:
-            print(f"price {symbol}")
-            data = yahoo_chart(symbol, start, today + dt.timedelta(days=2))
+            # Query the latest date in DB for this symbol
+            row = con.execute("select max(date) from prices where symbol=?", (symbol,)).fetchone()
+            latest_date_str = row[0] if row else None
+            
+            # Determine start date
+            if latest_date_str:
+                latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+                days_diff = (today - latest_dt).days
+                if days_diff <= 1:
+                    print(f"price {symbol} - already up to date (latest: {latest_date_str})")
+                    continue
+                fetch_start = latest_dt + dt.timedelta(days=1)
+                print(f"price {symbol} - incremental from {fetch_start.date()} (latest: {latest_date_str})")
+            else:
+                fetch_start = today - dt.timedelta(days=days_back)
+                print(f"price {symbol} - full fetch from {fetch_start.date()}")
+                
+            data = yahoo_chart(symbol, fetch_start, today + dt.timedelta(days=2))
             result = (data.get("chart") or {}).get("result") or []
             if not result:
                 print(f"  no yahoo result for {symbol}")
