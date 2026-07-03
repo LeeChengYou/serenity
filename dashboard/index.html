@@ -90,7 +90,7 @@
         <div class="panel-head" style="gap: 8px;">
           <div>
             <p class="eyebrow">serenity AI research partner</p>
-            <h2>AI 對話空間</h2>
+            <h2 style="display: flex; align-items: center; gap: 6px;">AI 對話空間 <span id="memoryStatus" style="font-size: 10px; font-weight: normal; color: var(--muted); background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: 4px;">🧠 記憶：載入中...</span></h2>
           </div>
           <div style="display: flex; align-items: center; gap: 5px;">
             <select id="chatModel" class="model-select">
@@ -105,6 +105,7 @@
               <option value="custom">自訂模型...</option>
             </select>
             <input id="customModelInput" style="display: none; width: 110px; font-size: 11px; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.5); outline: none;" placeholder="輸入模型代碼..." />
+            <button id="clearMemoryBtn" style="font-size: 11px; font-weight: bold; background: #e06666; color: white; border: none; padding: 5px 10px; border-radius: 999px; cursor: pointer;">🗑️ 清空記憶</button>
           </div>
         </div>
         <div id="chatMessages" class="chat-messages">

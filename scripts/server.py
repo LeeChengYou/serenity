@@ -28,6 +28,18 @@ except ImportError:
 def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    con.execute("""
+        create table if not exists user_memories (
+            id integer primary key autoincrement,
+            category text not null,
+            symbol text,
+            content text not null,
+            weight real default 1.0,
+            updated_at text not null,
+            unique(category, symbol, content)
+        );
+    """)
+    con.commit()
     return con
 
 
@@ -120,11 +132,26 @@ class Handler(SimpleHTTPRequestHandler):
                     pass
                 return res
             return {}
+        if path == "/api/memory":
+            try:
+                rows = [dict(r) for r in con.execute("select * from user_memories order by weight desc").fetchall()]
+                return {"memories": rows}
+            except Exception as e:
+                return {"error": str(e)}
         return {"error": "unknown api"}
 
     def route_post_api(self, path, payload):
         if path == "/api/chat":
             return handle_chat_api(payload)
+        if path == "/api/memory/clear":
+            try:
+                con = db()
+                con.execute("delete from user_memories")
+                con.commit()
+                con.close()
+                return {"success": True}
+            except Exception as e:
+                return {"error": str(e)}
         return {"error": "unknown api"}
 
 
@@ -158,8 +185,7 @@ def handle_chat_api(payload):
     con = None
     if DB_PATH.exists():
         try:
-            con = sqlite3.connect(DB_PATH)
-            con.row_factory = sqlite3.Row
+            con = db()
             
             # Get list of all known symbols in DB
             db_symbols = [r[0] for r in con.execute("select distinct symbol from mentions").fetchall()]
@@ -249,7 +275,22 @@ def handle_chat_api(payload):
         finally:
             if con:
                 con.close()
-                
+
+    # 1.1 Read Long-Term memories (Persistent Memory across model switches)
+    memories_context = ""
+    if DB_PATH.exists():
+        try:
+            con = db()
+            rows = con.execute("select category, symbol, content from user_memories where weight > 0 order by weight desc").fetchall()
+            if rows:
+                memories_context = "\n【本機儲存的使用者長期記憶與歷史偏好快照】（請遵循這些偏好來回答，但絕不捏造事實）：\n"
+                for r in rows:
+                    sym_part = f" (關於個股 ${r['symbol']})" if r['symbol'] else ""
+                    memories_context += f"  - [{r['category']}] {r['content']}{sym_part}\n"
+            con.close()
+        except Exception as e:
+            print(f"Error loading memories: {e}")
+
     # 2. Read skill instructions
     skill_path = ROOT / "skills" / "serenity-skill" / "SKILL.md"
     skill_content = ""
@@ -257,10 +298,16 @@ def handle_chat_api(payload):
         skill_content = skill_path.read_text(encoding="utf-8", errors="replace")
         
     system_instruction = (
-        "你是一位專業的 AI 投資研究夥伴 (Serenity)。你遵循 'serenity-skill' 的供應鏈瓶頸分析架構來回答使用者問題。\n"
+        "你是一位專業的 AI 投資研究夥伴 (Serenity)。你遵循 'serenity-skill' 的供應鏈瓶鏈分析架構來回答使用者問題。\n"
         "請使用與使用者相同的語言回答（如果使用者使用繁體中文，請用繁體中文回答；如果使用者使用簡體中文，請用簡體中文回答）。\n\n"
+        "【嚴格禁止幻覺與虛構】\n"
+        "1. 僅基於本機資料庫提供的事實數據與推文內容回答問題。\n"
+        "2. 絕對不能捏造任何股票代碼、提及次數、價格、日期或社群觀點。\n"
+        "3. 歷史長期記憶中提及的偏好僅用於引導回答風格與關聯討論，不作為捏造事實的依據。\n"
+        "4. 如果資料庫中沒有相關的價格或推文數據，必須直接承認，絕不編造。\n\n"
         f"這裡是你必須嚴格遵守的 serenity-skill 研究準則與工作流：\n{skill_content}\n\n"
         f"這裡是使用者提問相關的本機 SQLite 資料庫資料快照：\n{db_context}\n"
+        f"{memories_context}\n"
         "注意：回答時請保持專業、直接、理性、客觀且具有洞察力，避免空泛的投資建議。引用資料時，請直接使用上述提供的資料庫快照與事實。"
     )
     
@@ -314,6 +361,9 @@ def handle_chat_api(payload):
                     "system_instruction_len": len(system_instruction)
                 })
                 
+                # Trigger memory consolidation task in background
+                consolidate_memory_in_background(messages, reply)
+                
                 return {"response": reply}
         except Exception as e:
             return {
@@ -335,6 +385,96 @@ def handle_chat_api(payload):
                 "*(提示：設定 API 金鑰後，模型即可結合上述資料庫資料與 Serenity 瓶頸記分卡進行深入的瓶頸分析。)*"
             )
         }
+
+
+def consolidate_memory_in_background(messages, ai_reply):
+    t = threading.Thread(target=extract_memory_task, args=(messages, ai_reply), daemon=True)
+    t.start()
+
+
+def extract_memory_task(messages, ai_reply):
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return
+        
+    history_text = ""
+    for m in messages[-4:]:
+        role = "使用者" if m.get("role") == "user" else "AI"
+        history_text += f"{role}: {m.get('content')}\n"
+    history_text += f"AI: {ai_reply}\n"
+    
+    system_prompt = (
+        "你是一個長期記憶提煉器。分析以下對話，提取出使用者的偏好（preference）、最關注的產業或個股（interest）、以及雙方達成的關鍵研究結論（conclusion）。\n"
+        "排除日常問候。回傳格式必須是 JSON Array，且只包含 category, symbol, content 三個欄位。如果沒有提取出任何記憶，回傳空陣列 []。\n"
+        "範例輸出：\n"
+        "[\n"
+        "  {\"category\": \"interest\", \"symbol\": \"TSM\", \"content\": \"使用者高度關注 TSM 的 CoWoS 先進封裝產能缺口。\"},\n"
+        "  {\"category\": \"preference\", \"symbol\": \"\", \"content\": \"使用者偏好高強度證據來源，並對估值過高持謹慎態度。\"}\n"
+        "]"
+    )
+    
+    # Defaults to gemini-2.0-flash-lite, supporting customized Gemini 3.1 Flash Lite from .env
+    model_name = os.environ.get("GEMINI_MEMORY_MODEL", "gemini-2.0-flash-lite")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    
+    req_payload = {
+        "contents": [
+            {"role": "user", "parts": [{"text": f"請從以下對話中提煉長期記憶：\n{history_text}"}]}
+        ],
+        "systemInstruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json"
+        }
+    }
+    
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(req_payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            res_data = json.loads(resp.read().decode('utf-8'))
+            reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
+            
+            memories = json.loads(reply_text)
+            if isinstance(memories, list):
+                con = db()
+                now = datetime.now().isoformat()
+                for item in memories:
+                    cat = item.get("category", "interest")
+                    sym = (item.get("symbol") or "").upper().strip()
+                    content = item.get("content", "").strip()
+                    if content:
+                        con.execute(
+                            """insert into user_memories(category, symbol, content, weight, updated_at) 
+                               values (?, ?, ?, 1.0, ?)
+                               on conflict(category, symbol, content) do update set weight=1.0, updated_at=excluded.updated_at""",
+                            (cat, sym, content, now)
+                        )
+                con.commit()
+                con.close()
+                print(f"[Memory] Consolidation successful. Extracted {len(memories)} memory items.")
+    except Exception as e:
+        print(f"[Memory] Failed to consolidate memory: {e}")
+
+
+def decay_memories():
+    try:
+        con = db()
+        con.execute("""
+            update user_memories 
+            set weight = weight - (julianday('now') - julianday(updated_at)) * 0.1
+        """)
+        con.execute("delete from user_memories where weight <= 0")
+        con.commit()
+        con.close()
+        print("[Scheduler] Memory time-decay applied successfully.")
+    except Exception as e:
+        print(f"[Scheduler] Failed to decay memories: {e}")
 
 
 def summary(con):
@@ -392,6 +532,9 @@ def run_background_ingest():
                 print("[Scheduler] Automatic incremental price update completed successfully.")
             else:
                 print(f"[Scheduler] Price update returned code {res.returncode}. Stderr: {res.stderr.strip()}")
+            
+            # Apply memory decay daily
+            decay_memories()
         except Exception as e:
             print(f"[Scheduler] Background ingest warning: {e}")
         

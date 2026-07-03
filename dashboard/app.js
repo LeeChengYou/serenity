@@ -181,6 +181,8 @@ async function init() {
   renderFeed((await json('/api/feed?limit=36')).items || []);
   const first = state.symbols.find(s => s.has_prices) || state.symbols[0];
   if (first) selectSymbol(first.symbol);
+  
+  updateMemoryStatus();
 }
 
 function renderKpis(s) {
@@ -403,6 +405,7 @@ async function sendChatMessage() {
       const reply = data.response || 'AI 未能給出有效回覆。';
       appendChatMessage('model', reply);
       state.chatHistory.push({ role: 'model', content: reply });
+      setTimeout(updateMemoryStatus, 2000);
     }
   } catch (err) {
     clearTimeout(timeoutId);
@@ -416,6 +419,19 @@ async function sendChatMessage() {
     input.disabled = false;
     sendBtn.disabled = false;
     input.focus();
+  }
+}
+
+async function updateMemoryStatus() {
+  try {
+    const res = await fetch('/api/memory');
+    if (res.ok) {
+      const data = await res.json();
+      const count = (data.memories || []).length;
+      $('memoryStatus').textContent = `🧠 記憶：${count} 條`;
+    }
+  } catch (e) {
+    console.error("Failed to load memory status", e);
   }
 }
 
@@ -435,5 +451,29 @@ $('chatModel').addEventListener('change', (e) => {
     customInput.style.display = 'none';
   }
 });
+
+$('clearMemoryBtn').onclick = async () => {
+  if (!confirm("確定要清空本機的所有長期對話記憶與對話記錄嗎？此動作無法復原。")) {
+    return;
+  }
+  try {
+    const res = await fetch('/api/memory/clear', { method: 'POST' });
+    if (res.ok) {
+      state.chatHistory = [];
+      $('chatMessages').innerHTML = `
+        <div class="msg system">
+          <b>Serenity 投研夥伴：</b>本機對話記憶已成功清除！對話已重置。<br>
+          歡迎來到 Serenity 投研對話空間。我是您的 AI 助理，已載入 <code>serenity-skill</code> 瓶頸獵人架構，能幫您分析個別股票的物理供應鏈瓶頸或進行產業掃描。請輸入您的問題，例如：
+          <br>💡 <a href="#" onclick="clickSampleQuestion('分析 NVDA 的瓶頸與風險')">「分析 NVDA 的瓶頸與風險」</a> 
+          或 <a href="#" onclick="clickSampleQuestion('用 Serenity 的方式看 TSM')">「用 Serenity 的方式看 TSM」</a>。
+        </div>
+      `;
+      updateMemoryStatus();
+      alert("本機長期記憶與歷史對話已完全清空！");
+    }
+  } catch (err) {
+    alert("清空記憶失敗：" + err.message);
+  }
+};
 
 init().catch(err => document.body.insertAdjacentHTML('afterbegin', `<pre>${escapeHtml(err.message)}</pre>`));
