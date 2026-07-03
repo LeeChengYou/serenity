@@ -381,10 +381,13 @@ async function sendChatMessage() {
     const selectVal = $('chatModel').value;
     const modelName = selectVal === 'custom' ? $('customModelInput').value.trim() || 'gemini-2.5-flash' : selectVal;
     
+    // Goal 4: Limit context to last 6 turns to save token usage
+    const trimmedHistory = state.chatHistory.length > 6 ? state.chatHistory.slice(-6) : state.chatHistory;
+    
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: state.chatHistory, model: modelName }),
+      body: JSON.stringify({ messages: trimmedHistory, model: modelName }),
       signal: controller.signal
     });
     
