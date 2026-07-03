@@ -319,8 +319,8 @@ function escapeHtml(s) {
   return (s || '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 }
 
-document.querySelectorAll('.tabs button').forEach(btn => btn.onclick = () => {
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+document.querySelectorAll('.symbols-panel .tabs button').forEach(btn => btn.onclick = () => {
+  document.querySelectorAll('.symbols-panel .tabs button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   state.filter = btn.dataset.filter;
   renderSymbols();
