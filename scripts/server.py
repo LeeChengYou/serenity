@@ -149,7 +149,7 @@ def handle_chat_api(payload):
         
     user_message = messages[-1].get("content", "")
     
-    # 1. Look for symbols in the message
+    # 1. Look for symbols and topics in the message
     mentioned_symbols = []
     db_context = ""
     con = None
@@ -157,19 +157,75 @@ def handle_chat_api(payload):
         try:
             con = sqlite3.connect(DB_PATH)
             con.row_factory = sqlite3.Row
+            
+            # Get list of all known symbols in DB
             db_symbols = [r[0] for r in con.execute("select distinct symbol from mentions").fetchall()]
+            
+            # Extract explicit symbols (e.g. $TSM, NVDA)
             words = re.findall(r'[A-Za-z0-9.]+', user_message.upper())
             for word in words:
                 word_clean = word.lstrip('$')
                 if word_clean in db_symbols and word_clean not in mentioned_symbols:
                     mentioned_symbols.append(word_clean)
-                    
+            
+            # Extract theme keywords (Semantic RAG)
+            topic_keywords = []
+            CHOKEPOINT_THEMES = {
+                "先進封裝": ["packaging", "cowos", "封装", "先進封裝", "封裝", "hbm"],
+                "液冷散熱": ["cooling", "liquid", "散热", "液冷", "散熱", "水冷"],
+                "機器人減速器": ["robot", "reducer", "harmonic", "gear", "減速器", "諧波", "機器人", "齒輪"],
+                "光通訊矽光子": ["optical", "photonics", "cpo", "光模組", "光模塊", "矽光子", "光電"],
+                "半導體材料": ["photoresist", "silicon", "substrate", "materials", "光阻劑", "矽晶圓", "化學品", "材料", "靶材"]
+            }
+            user_lower = user_message.lower()
+            for theme, kws in CHOKEPOINT_THEMES.items():
+                if any(kw in user_lower for kw in kws):
+                    topic_keywords.extend(kws)
+            
+            # Also extract other potential English terms or Chinese words of length >= 2
+            zh_words = re.findall(r'[\u4e00-\u9fa5]{2,}', user_message)
+            en_words = [w.lower() for w in re.findall(r'[A-Za-z]{4,}', user_message)]
+            stopwords = {"with", "that", "this", "from", "about", "what", "have", "some", "your", "them", "analyst", "stock", "view"}
+            for w in en_words:
+                if w not in stopwords and w not in topic_keywords:
+                    topic_keywords.append(w)
+            for w in zh_words:
+                if w not in topic_keywords:
+                    topic_keywords.append(w)
+            
+            matched_tweets = []
+            if topic_keywords:
+                conditions = " OR ".join(["text LIKE ?" for _ in topic_keywords])
+                params = [f"%{k}%" for k in topic_keywords]
+                sql = f"""
+                    select m.symbol, m.text, m.mentioned_at 
+                    from mentions m
+                    where {conditions}
+                    order by m.mentioned_at desc limit 8
+                """
+                matched_rows = con.execute(sql, params).fetchall()
+                for r in matched_rows:
+                    matched_tweets.append(dict(r))
+            
+            # If topic-relevant tweets are matched, inject them as context and auto-associate their symbols
+            if matched_tweets:
+                db_context += "\n這裡是與您詢問的主題/關鍵字相關的 X 社群貼文觀點（由系統自動檢索注入）：\n"
+                for idx, t in enumerate(matched_tweets, 1):
+                    db_context += f"  [{idx}] [${t['symbol']}] [{t['mentioned_at']}] {t['text'].strip()}\n"
+                
+                # Auto-associate symbols from matched tweets (limit total symbols to 5 to avoid context blowup)
+                for t in matched_tweets:
+                    sym = t['symbol'].upper()
+                    if sym not in mentioned_symbols and len(mentioned_symbols) < 5:
+                        mentioned_symbols.append(sym)
+            
+            # Pull metrics and prices for all identified symbols (explicit + auto-associated)
             if mentioned_symbols:
-                db_context = "\n這裡是使用者詢問的個股在本機資料庫中的最新資料（由系統自動注入）：\n"
+                db_context += "\n這裡是相關個股在本機資料庫中的最新資料與價格（由系統自動注入）：\n"
                 for sym in mentioned_symbols:
                     count = con.execute("select count(*) from mentions where symbol=?", (sym,)).fetchone()[0]
                     tweets = [dict(r) for r in con.execute(
-                        "select text, mentioned_at from mentions where symbol=? order by mentioned_at desc limit 3", (sym,)
+                        "select text, mentioned_at from mentions where symbol=? order by mentioned_at desc limit 2", (sym,)
                     ).fetchall()]
                     prices = [dict(r) for r in con.execute(
                         "select date, close from prices where symbol=? order by date desc limit 5", (sym,)
