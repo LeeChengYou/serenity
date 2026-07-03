@@ -87,13 +87,22 @@
       </section>
 
       <section class="panel chat-panel">
-        <div class="panel-head" style="gap: 8px;">
+        <div class="panel-head">
           <div>
             <p class="eyebrow">serenity AI research partner</p>
             <h2 style="display: flex; align-items: center; gap: 6px;">AI 對話空間 <span id="memoryStatus" style="font-size: 10px; font-weight: normal; color: var(--muted); background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: 4px;">🧠 記憶：載入中...</span></h2>
           </div>
-          <div style="display: flex; align-items: center; gap: 5px;">
-            <select id="chatModel" class="model-select">
+        </div>
+        <div id="chatMessages" class="chat-messages">
+          <div class="msg system">
+            <b>Serenity 投研夥伴：</b>歡迎來到 Serenity 投研對話空間。我是您的 AI 助理，已載入 <code>serenity-skill</code> 瓶頸獵人架構，能幫您分析個別股票的物理供應鏈瓶頸或進行產業掃描。請輸入您的問題，例如：
+            <br>💡 <a href="#" onclick="clickSampleQuestion('分析 NVDA 的瓶頸與風險')">「分析 NVDA 的瓶頸與風險」</a> 
+            或 <a href="#" onclick="clickSampleQuestion('用 Serenity 的方式看 TSM')">「用 Serenity 的方式看 TSM」</a>。
+          </div>
+        </div>
+        <div class="chat-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; border-top: 1px solid var(--line); background: rgba(255,255,255,0.25);">
+          <div>
+            <select id="chatModel" class="model-select" style="font-size: 11px; padding: 3px 8px;">
               <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
               <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
               <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
@@ -104,16 +113,9 @@
               <option value="gemini-1.5-flash-8b">Gemini 1.5 Flash-8B</option>
               <option value="custom">自訂模型...</option>
             </select>
-            <input id="customModelInput" style="display: none; width: 110px; font-size: 11px; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.5); outline: none;" placeholder="輸入模型代碼..." />
-            <button id="clearMemoryBtn" style="font-size: 11px; font-weight: bold; background: #e06666; color: white; border: none; padding: 5px 10px; border-radius: 999px; cursor: pointer;">🗑️ 清空記憶</button>
+            <input id="customModelInput" style="display: none; width: 90px; font-size: 10px; padding: 4px 6px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.5); outline: none; margin-left: 4px;" placeholder="自訂..." />
           </div>
-        </div>
-        <div id="chatMessages" class="chat-messages">
-          <div class="msg system">
-            <b>Serenity 投研夥伴：</b>歡迎來到 Serenity 投研對話空間。我是您的 AI 助理，已載入 <code>serenity-skill</code> 瓶頸獵人架構，能幫您分析個別股票的物理供應鏈瓶頸或進行產業掃描。請輸入您的問題，例如：
-            <br>💡 <a href="#" onclick="clickSampleQuestion('分析 NVDA 的瓶頸與風險')">「分析 NVDA 的瓶頸與風險」</a> 
-            或 <a href="#" onclick="clickSampleQuestion('用 Serenity 的方式看 TSM')">「用 Serenity 的方式看 TSM」</a>。
-          </div>
+          <button id="clearMemoryBtn" style="font-size: 11px; font-weight: bold; background: transparent; color: #b84d4d; border: 1px solid #e08888; padding: 3px 8px; border-radius: 999px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#fbebeb'" onmouseout="this.style.background='transparent'">🗑️ 清空記憶</button>
         </div>
         <div class="chat-input-wrap">
           <input id="chatInput" placeholder="輸入問題（例如：分析 NVDA 的瓶頸）..." />
