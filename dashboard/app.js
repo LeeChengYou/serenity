@@ -59,9 +59,14 @@ function renderScorecard(symbol, card) {
   
   $('scorecardVerdict').textContent = card.verdict || '';
   $('scorecardMeta').innerHTML = `
-    🏢 公司名稱：<b>${card.company || symbol}</b> | 
-    🌍 市場分類：<b>${card.market || '-'}</b><br>
-    📅 評分更新：<b>${card.updated_at ? new Date(card.updated_at).toLocaleDateString() : '-'}</b>
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <div>
+        🏢 公司名稱：<b>${card.company || symbol}</b> | 
+        🌍 市場分類：<b>${card.market || '-'}</b><br>
+        📅 評分更新：<b>${card.updated_at ? new Date(card.updated_at).toLocaleDateString() : '-'}</b>
+      </div>
+      <button id="regenerateScorecardBtn" onclick="triggerScorecardGeneration(true)" style="font-size: 11px; font-weight: bold; background: transparent; color: var(--green); border: 1px solid var(--green); padding: 4px 10px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">🔄 重新產生 AI 分析</button>
+    </div>
   `;
   
   const weaknesses = card.kill_switches || [];
@@ -126,16 +131,16 @@ function renderScorecard(symbol, card) {
   });
 }
 
-window.triggerScorecardGeneration = async function() {
+window.triggerScorecardGeneration = async function(isRegen = false) {
   const symbol = state.active;
   if (!symbol) return;
   
-  const btn = $('generateScorecardBtn');
+  const btn = isRegen ? $('regenerateScorecardBtn') : $('generateScorecardBtn');
   if (!btn) return;
   
   const originalText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '⚡ 正在產生 AI 瓶頸分析，請稍候 (約 10-20 秒)...';
+  btn.textContent = isRegen ? '🔄 正在重新分析中...' : '⚡ 正在產生 AI 瓶頸分析，請稍候 (約 10-20 秒)...';
   btn.style.opacity = 0.7;
   
   try {
@@ -147,7 +152,7 @@ window.triggerScorecardGeneration = async function() {
       if (result.success) {
         state.scorecardData = await json(`/api/scorecard/${encodeURIComponent(symbol)}`);
         renderScorecard(symbol, state.scorecardData);
-        alert(`$${symbol} AI 供應鏈瓶頸記分卡已成功生成！`);
+        alert(`$${symbol} AI 供應鏈瓶頸分析已更新完成！`);
       } else {
         alert(`產生分析失敗：${result.error || '未知錯誤'}`);
       }
@@ -157,9 +162,11 @@ window.triggerScorecardGeneration = async function() {
   } catch (err) {
     alert(`連線錯誤：${err.message}`);
   } finally {
-    btn.disabled = false;
-    btn.textContent = originalText;
-    btn.style.opacity = 1.0;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+      btn.style.opacity = 1.0;
+    }
   }
 };
 
