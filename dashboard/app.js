@@ -102,6 +102,9 @@ function renderScorecard(symbol, card) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: {
+        padding: 8
+      },
       scales: {
         r: {
           angleLines: { color: 'rgba(24, 32, 25, 0.08)' },
@@ -110,8 +113,9 @@ function renderScorecard(symbol, card) {
           suggestedMax: 5,
           ticks: { stepSize: 1, display: false },
           pointLabels: {
-            font: { size: 10, weight: 'bold' },
-            color: '#182019'
+            font: { size: 9, weight: 'bold' },
+            color: '#182019',
+            padding: 3
           }
         }
       },
@@ -121,6 +125,43 @@ function renderScorecard(symbol, card) {
     }
   });
 }
+
+window.triggerScorecardGeneration = async function() {
+  const symbol = state.active;
+  if (!symbol) return;
+  
+  const btn = $('generateScorecardBtn');
+  if (!btn) return;
+  
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⚡ 正在產生 AI 瓶頸分析，請稍候 (約 10-20 秒)...';
+  btn.style.opacity = 0.7;
+  
+  try {
+    const res = await fetch(`/api/scorecard/generate/${encodeURIComponent(symbol)}`, {
+      method: 'POST'
+    });
+    if (res.ok) {
+      const result = await res.json();
+      if (result.success) {
+        state.scorecardData = await json(`/api/scorecard/${encodeURIComponent(symbol)}`);
+        renderScorecard(symbol, state.scorecardData);
+        alert(`$${symbol} AI 供應鏈瓶頸記分卡已成功生成！`);
+      } else {
+        alert(`產生分析失敗：${result.error || '未知錯誤'}`);
+      }
+    } else {
+      alert(`伺服器錯誤 ${res.status}`);
+    }
+  } catch (err) {
+    alert(`連線錯誤：${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    btn.style.opacity = 1.0;
+  }
+};
 
 function wrapTooltipText(text, maxChars = 54, maxLines = 9) {
   const lines = [];
