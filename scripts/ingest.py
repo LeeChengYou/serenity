@@ -366,9 +366,20 @@ def fetch_prices(days_back=420, min_mentions=2):
                 # Query the latest date in DB for this symbol
                 row = con.execute("select max(date) from prices where symbol=?", (symbol,)).fetchone()
                 latest_date_str = row[0] if row else None
-                
-                # Determine start date (incremental — preserve WIP behaviour)
+
+                # Is OHLC already populated for the latest bar?  Older rows may
+                # predate OHLC support (open/high/low NULL); those need a full
+                # re-fetch to backfill, so we must not take the incremental skip.
+                ohlc_ready = False
                 if latest_date_str:
+                    orow = con.execute(
+                        "select open from prices where symbol=? and date=?",
+                        (symbol, latest_date_str),
+                    ).fetchone()
+                    ohlc_ready = orow is not None and orow[0] is not None
+
+                # Determine start date (incremental — preserve WIP behaviour)
+                if latest_date_str and ohlc_ready:
                     latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
                     days_diff = (today - latest_dt).days
                     if days_diff <= 1:
@@ -378,7 +389,8 @@ def fetch_prices(days_back=420, min_mentions=2):
                     print(f"price {symbol} - incremental from {fetch_start.date()} (latest: {latest_date_str})")
                 else:
                     fetch_start = today - dt.timedelta(days=days_back)
-                    print(f"price {symbol} - full fetch from {fetch_start.date()}")
+                    reason = "backfill OHLC" if latest_date_str else "first fetch"
+                    print(f"price {symbol} - full fetch ({reason}) from {fetch_start.date()}")
 
                 data = yahoo_chart(symbol, fetch_start, today + dt.timedelta(days=2))
                 result = (data.get("chart") or {}).get("result") or []

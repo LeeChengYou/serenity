@@ -29,6 +29,9 @@ export/
 # Browser-copied X curl commands contain cookies/tokens
 x_curl/*.curl
 
+# Agent worktrees created by the harness
+.claude/worktrees/
+
 # Logs and OS/editor noise
 *.log
 .DS_Store
