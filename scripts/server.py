@@ -25,10 +25,47 @@ except ImportError:
     pass
 
 
+_server_start_time = time.time()
+_schema_initialized = False
+
+def call_gemini(model_name: str, contents: list, system_instruction: str,
+                temperature: float = 0.3, response_mime_type: str = None) -> dict:
+    """Unified Gemini API call helper. Passes key via HTTP header x-goog-api-key."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is not set in environment.")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    req_payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "generationConfig": {"temperature": temperature}
+    }
+    if response_mime_type:
+        req_payload["generationConfig"]["responseMimeType"] = response_mime_type
+        
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(req_payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key
+        }
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
 def db():
+    global _schema_initialized
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
-    con.execute("""
+    con.execute("pragma journal_mode=wal")
+    if not _schema_initialized:
+        _init_schema(con)
+        _schema_initialized = True
+    return con
+
+def _init_schema(con):
+    con.executescript("""
         create table if not exists user_memories (
             id integer primary key autoincrement,
             category text not null,
@@ -38,9 +75,33 @@ def db():
             updated_at text not null,
             unique(category, symbol, content)
         );
+        create table if not exists scorecards (
+            symbol text primary key,
+            company text,
+            market text,
+            final_score real,
+            verdict text,
+            raw_factor_points real,
+            penalty_points real,
+            factors_json text,
+            penalties_json text,
+            evidence_json text,
+            kill_switches_json text,
+            updated_at text
+        );
+        create index if not exists idx_user_memories_weight on user_memories(weight desc);
+        create index if not exists idx_scorecards_symbol on scorecards(symbol);
     """)
+    for idx_name, tbl_name, col in [
+        ("idx_mentions_symbol", "mentions", "symbol"),
+        ("idx_prices_symbol_date", "prices", "symbol, date"),
+        ("idx_tweets_created", "tweets", "created_at")
+    ]:
+        try:
+            con.execute(f"create index if not exists {idx_name} on {tbl_name}({col})")
+        except Exception:
+            pass
     con.commit()
-    return con
 
 
 def one(con, sql, params=()):
@@ -49,6 +110,8 @@ def one(con, sql, params=()):
 
 
 class Handler(SimpleHTTPRequestHandler):
+    MAX_PAYLOAD = 2 * 1024 * 1024  # 2MB payload limit
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
@@ -59,7 +122,12 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = self.route_api(parsed.path, parse_qs(parsed.query))
                 self.send_json(payload)
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=500)
+                import traceback
+                traceback.print_exc()
+                safe_msg = str(exc)
+                if "key=" in safe_msg.lower() or "api_key" in safe_msg.lower() or "goog-api-key" in safe_msg.lower():
+                    safe_msg = "Internal API request error (credentials hidden for security)"
+                self.send_json({"error": safe_msg}, status=500)
             return
         if parsed.path == "/":
             self.path = "/index.html"
@@ -69,6 +137,9 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
             content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > self.MAX_PAYLOAD:
+                self.send_json({"error": f"Payload too large (max {self.MAX_PAYLOAD} bytes)"}, status=413)
+                return
             post_data = self.rfile.read(content_length).decode("utf-8")
             try:
                 payload = {}
@@ -77,7 +148,12 @@ class Handler(SimpleHTTPRequestHandler):
                 response_payload = self.route_post_api(parsed.path, payload)
                 self.send_json(response_payload)
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=500)
+                import traceback
+                traceback.print_exc()
+                safe_msg = str(exc)
+                if "key=" in safe_msg.lower() or "api_key" in safe_msg.lower() or "goog-api-key" in safe_msg.lower():
+                    safe_msg = "Internal API request error (credentials hidden for security)"
+                self.send_json({"error": safe_msg}, status=500)
             return
         self.send_response(404)
         self.end_headers()
@@ -109,57 +185,63 @@ class Handler(SimpleHTTPRequestHandler):
         if not DB_PATH.exists():
             return {"error": f"database not found: {DB_PATH}"}
         con = db()
-        if path == "/api/summary":
-            return summary(con)
-        if path == "/api/feed":
-            limit = int((query.get("limit") or [80])[0])
-            return {"items": [dict(r) for r in con.execute(
-                """select m.symbol, m.mentioned_at, m.text, t.url, t.favorite_count, t.reply_count, t.source
-                       from mentions m join tweets t on t.tweet_id=m.tweet_id
-                       order by m.mentioned_at desc limit ?""", (limit,))]}
-        if path.startswith("/api/symbol/"):
-            symbol = unquote(path.rsplit("/", 1)[-1]).upper()
-            return symbol_payload(con, symbol)
-        if path.startswith("/api/scorecard/"):
-            symbol = unquote(path.rsplit("/", 1)[-1]).upper()
-            row = con.execute("select * from scorecards where symbol=?", (symbol,)).fetchone()
-            if row:
-                res = dict(row)
+        try:
+            if path == "/api/summary":
+                return summary(con)
+            if path == "/api/feed":
+                limit = int((query.get("limit") or [80])[0])
+                return {"items": [dict(r) for r in con.execute(
+                    """select m.symbol, m.mentioned_at, m.text, t.url, t.favorite_count, t.reply_count, t.source
+                           from mentions m join tweets t on t.tweet_id=m.tweet_id
+                           order by m.mentioned_at desc limit ?""", (limit,))]}
+            if path.startswith("/api/symbol/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                return symbol_payload(con, symbol)
+            if path.startswith("/api/scorecard/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                row = con.execute("select * from scorecards where symbol=?", (symbol,)).fetchone()
+                if row:
+                    res = dict(row)
+                    try:
+                        res["factor_details"] = json.loads(res["factors_json"])
+                        res["penalty_details"] = json.loads(res["penalties_json"])
+                        res["evidence"] = json.loads(res["evidence_json"])
+                        res["kill_switches"] = json.loads(res["kill_switches_json"])
+                    except Exception:
+                        pass
+                    return res
+                return {}
+            if path == "/api/memory":
                 try:
-                    res["factor_details"] = json.loads(res["factors_json"])
-                    res["penalty_details"] = json.loads(res["penalties_json"])
-                    res["evidence"] = json.loads(res["evidence_json"])
-                    res["kill_switches"] = json.loads(res["kill_switches_json"])
-                except Exception:
-                    pass
-                return res
-            return {}
-        if path == "/api/memory":
-            try:
-                rows = [dict(r) for r in con.execute("select * from user_memories order by weight desc").fetchall()]
-                return {"memories": rows}
-            except Exception as e:
-                return {"error": str(e)}
+                    rows = [dict(r) for r in con.execute("select * from user_memories order by weight desc").fetchall()]
+                    return {"memories": rows}
+                except Exception as e:
+                    return {"error": str(e)}
+        finally:
+            con.close()
         return {"error": "unknown api"}
 
     def route_post_api(self, path, payload):
         if path == "/api/chat":
             return handle_chat_api(payload)
         if path == "/api/memory/clear":
+            con = db()
             try:
-                con = db()
                 con.execute("delete from user_memories")
                 con.commit()
-                con.close()
                 return {"success": True}
             except Exception as e:
                 return {"error": str(e)}
+            finally:
+                con.close()
         if path.startswith("/api/scorecard/generate/"):
             symbol = unquote(path.rsplit("/", 1)[-1]).upper().strip()
             try:
                 con = db()
-                tweets = [r[0] for r in con.execute("select text from mentions where symbol=? order by mentioned_at desc limit 20", (symbol,)).fetchall()]
-                con.close()
+                try:
+                    tweets = [r[0] for r in con.execute("select text from mentions where symbol=? order by mentioned_at desc limit 20", (symbol,)).fetchall()]
+                finally:
+                    con.close()
                 
                 tweets_text = "\n".join([f"- {t}" for t in tweets]) if tweets else "本機資料庫無相關貼文，請以您的知識庫分析該公司。"
                 
@@ -201,98 +283,65 @@ class Handler(SimpleHTTPRequestHandler):
                     "注意：請用台灣繁體中文寫所有內容。"
                 )
                 
-                api_key = os.environ.get("GEMINI_API_KEY")
-                if not api_key:
-                    return {"error": "GEMINI_API_KEY not set"}
-                
                 model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                
-                req_payload = {
-                    "contents": [
-                        {"role": "user", "parts": [{"text": f"請對個股 {symbol} 進行定性供應鏈瓶頸分析。本機資料庫相關貼文如下：\n{tweets_text}"}]}
-                    ],
-                    "systemInstruction": {
-                        "parts": [{"text": system_prompt}]
-                    },
-                    "generationConfig": {
-                        "temperature": 0.3,
-                        "responseMimeType": "application/json"
-                    }
-                }
-                
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(req_payload).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'}
+                res_data = call_gemini(
+                    model_name=model_name,
+                    contents=[{"role": "user", "parts": [{"text": f"請對個股 {symbol} 進行定性供應鏈瓶頸分析。本機資料庫相關貼文如下：\n{tweets_text}"}]}],
+                    system_instruction=system_prompt,
+                    temperature=0.3,
+                    response_mime_type="application/json"
                 )
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    res_data = json.loads(resp.read().decode('utf-8'))
-                    reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
-                    card_data = json.loads(reply_text)
+                
+                reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
+                card_data = json.loads(reply_text)
+                
+                WEIGHTS = {
+                    "demand_inflection": 15,
+                    "architecture_coupling": 10,
+                    "chokepoint_severity": 15,
+                    "supplier_concentration": 12,
+                    "expansion_difficulty": 12,
+                    "evidence_quality": 15,
+                    "valuation_disconnect": 11,
+                    "catalyst_timing": 10,
+                }
+                PENALTY_MULTIPLIER = 2.0
+                
+                factors = card_data.get("factors", {})
+                penalties = card_data.get("penalties", {})
+                
+                factor_details = {}
+                total = 0.0
+                for key, weight in WEIGHTS.items():
+                    rating = float(factors.get(key, 0))
+                    rating = max(0.0, min(5.0, rating))
+                    points = rating / 5.0 * weight
+                    factor_details[key] = {"rating": rating, "weight": weight, "points": round(points, 2)}
+                    total += points
                     
-                    WEIGHTS = {
-                        "demand_inflection": 15,
-                        "architecture_coupling": 10,
-                        "chokepoint_severity": 15,
-                        "supplier_concentration": 12,
-                        "expansion_difficulty": 12,
-                        "evidence_quality": 15,
-                        "valuation_disconnect": 11,
-                        "catalyst_timing": 10,
-                    }
-                    PENALTY_MULTIPLIER = 2.0
+                penalty_details = {}
+                penalty_total = 0.0
+                for key, val in penalties.items():
+                    rating = float(val)
+                    rating = max(0.0, min(5.0, rating))
+                    points = rating * PENALTY_MULTIPLIER
+                    penalty_details[key] = {"rating": rating, "points": round(points, 2)}
+                    penalty_total += points
                     
-                    factors = card_data.get("factors", {})
-                    penalties = card_data.get("penalties", {})
+                final_score = max(0.0, min(100.0, total - penalty_total))
+                
+                if final_score >= 85:
+                    verdict = "Top research priority"
+                elif final_score >= 70:
+                    verdict = "High research priority"
+                elif final_score >= 55:
+                    verdict = "Worth tracking"
+                else:
+                    verdict = "Early lead or low priority"
                     
-                    factor_details = {}
-                    total = 0.0
-                    for key, weight in WEIGHTS.items():
-                        rating = float(factors.get(key, 0))
-                        rating = max(0.0, min(5.0, rating))
-                        points = rating / 5.0 * weight
-                        factor_details[key] = {"rating": rating, "weight": weight, "points": round(points, 2)}
-                        total += points
-                        
-                    penalty_details = {}
-                    penalty_total = 0.0
-                    for key, val in penalties.items():
-                        rating = float(val)
-                        rating = max(0.0, min(5.0, rating))
-                        points = rating * PENALTY_MULTIPLIER
-                        penalty_details[key] = {"rating": rating, "points": round(points, 2)}
-                        penalty_total += points
-                        
-                    final_score = max(0.0, min(100.0, total - penalty_total))
-                    
-                    if final_score >= 85:
-                        verdict = "Top research priority"
-                    elif final_score >= 70:
-                        verdict = "High research priority"
-                    elif final_score >= 55:
-                        verdict = "Worth tracking"
-                    else:
-                        verdict = "Early lead or low priority"
-                        
-                    now_str = datetime.now().isoformat()
-                    con = db()
-                    con.execute("""
-                        create table if not exists scorecards (
-                            symbol text primary key,
-                            company text,
-                            market text,
-                            final_score real,
-                            verdict text,
-                            raw_factor_points real,
-                            penalty_points real,
-                            factors_json text,
-                            penalties_json text,
-                            evidence_json text,
-                            kill_switches_json text,
-                            updated_at text
-                        )
-                    """)
+                now_str = datetime.now().isoformat()
+                con = db()
+                try:
                     con.execute("""
                         insert into scorecards (
                             symbol, company, market, final_score, verdict, 
@@ -327,11 +376,17 @@ class Handler(SimpleHTTPRequestHandler):
                         now_str
                     ))
                     con.commit()
+                finally:
                     con.close()
-                    
-                    return {"success": True, "final_score": round(final_score, 2)}
+                
+                return {"success": True, "final_score": round(final_score, 2)}
             except Exception as e:
-                return {"error": str(e)}
+                import traceback
+                traceback.print_exc()
+                safe_msg = str(e)
+                if "key=" in safe_msg.lower() or "api_key" in safe_msg.lower() or "goog-api-key" in safe_msg.lower():
+                    safe_msg = "Internal API request error (credentials hidden for security)"
+                return {"error": safe_msg}
         return {"error": "unknown api"}
 
 
@@ -496,59 +551,53 @@ def handle_chat_api(payload):
     if api_key:
         try:
             model_name = payload.get("model") or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
             
             contents = []
             for msg in messages:
                 role = 'user' if msg.get('role') == 'user' else 'model'
                 contents.append({"role": role, "parts": [{"text": msg.get('content', '')}]})
                 
-            req_payload = {
-                "contents": contents,
-                "systemInstruction": {
-                    "parts": [{"text": system_instruction}]
-                },
-                "generationConfig": {
-                    "temperature": 0.3
-                }
-            }
-            
             start_time = time.time()
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(req_payload).encode('utf-8'),
-                headers={'Content-Type': 'application/json'}
+            res_data = call_gemini(
+                model_name=model_name,
+                contents=contents,
+                system_instruction=system_instruction,
+                temperature=0.3
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                res_data = json.loads(resp.read().decode('utf-8'))
-                reply = res_data['candidates'][0]['content']['parts'][0]['text']
-                
-                usage = res_data.get("usageMetadata", {})
-                prompt_tokens = usage.get("promptTokenCount", 0)
-                completion_tokens = usage.get("candidatesTokenCount", 0)
-                total_tokens = usage.get("totalTokenCount", 0)
-                time_taken = round((time.time() - start_time) * 1000)
-                
-                log_chat_transaction({
-                    "timestamp": datetime.now().isoformat(),
-                    "model": model_name,
-                    "prompt": user_message,
-                    "response": reply,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                    "latency_ms": time_taken,
-                    "system_instruction_len": len(system_instruction)
-                })
-                
-                # Trigger memory consolidation task in background
-                consolidate_memory_in_background(messages, reply)
-                
-                return {"response": reply}
+            
+            reply = res_data['candidates'][0]['content']['parts'][0]['text']
+            
+            usage = res_data.get("usageMetadata", {})
+            prompt_tokens = usage.get("promptTokenCount", 0)
+            completion_tokens = usage.get("candidatesTokenCount", 0)
+            total_tokens = usage.get("totalTokenCount", 0)
+            time_taken = round((time.time() - start_time) * 1000)
+            
+            log_chat_transaction({
+                "timestamp": datetime.now().isoformat(),
+                "model": model_name,
+                "prompt": user_message,
+                "response": reply,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "latency_ms": time_taken,
+                "system_instruction_len": len(system_instruction)
+            })
+            
+            # Trigger memory consolidation task in background
+            consolidate_memory_in_background(messages, reply)
+            
+            return {"response": reply}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            safe_msg = str(e)
+            if "key=" in safe_msg.lower() or "api_key" in safe_msg.lower() or "goog-api-key" in safe_msg.lower():
+                safe_msg = "Internal API request error (credentials hidden for security)"
             return {
                 "response": (
-                    f"❌ **[AI 呼叫失敗]**：{e}\n\n"
+                    f"❌ **[AI 呼叫失敗]**：{safe_msg}\n\n"
                     "**[本機資料庫查詢結果]**：\n"
                     f"偵測到您詢問了個股：{', '.join(mentioned_symbols) if mentioned_symbols else '無股票代號'}\n"
                     f"{db_context if db_context else '未在您的問題中偵測到資料庫已有的個股名稱。'}"
@@ -593,36 +642,21 @@ def extract_memory_task(messages, ai_reply):
         "]"
     )
     
-    # Defaults to gemini-2.0-flash-lite, supporting customized Gemini 3.1 Flash Lite from .env
     model_name = os.environ.get("GEMINI_MEMORY_MODEL", "gemini-2.0-flash-lite")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-    
-    req_payload = {
-        "contents": [
-            {"role": "user", "parts": [{"text": f"請從以下對話中提煉長期記憶：\n{history_text}"}]}
-        ],
-        "systemInstruction": {
-            "parts": [{"text": system_prompt}]
-        },
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json"
-        }
-    }
     
     try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(req_payload).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
+        res_data = call_gemini(
+            model_name=model_name,
+            contents=[{"role": "user", "parts": [{"text": f"請從以下對話中提煉長期記憶：\n{history_text}"}]}],
+            system_instruction=system_prompt,
+            temperature=0.2,
+            response_mime_type="application/json"
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            res_data = json.loads(resp.read().decode('utf-8'))
-            reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
-            
-            memories = json.loads(reply_text)
-            if isinstance(memories, list):
-                con = db()
+        reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
+        memories = json.loads(reply_text)
+        if isinstance(memories, list):
+            con = db()
+            try:
                 now = datetime.now().isoformat()
                 for item in memories:
                     cat = item.get("category", "interest")
@@ -636,25 +670,27 @@ def extract_memory_task(messages, ai_reply):
                             (cat, sym, content, now)
                         )
                 con.commit()
-                con.close()
                 print(f"[Memory] Consolidation successful. Extracted {len(memories)} memory items.")
+            finally:
+                con.close()
     except Exception as e:
         print(f"[Memory] Failed to consolidate memory: {e}")
 
 
 def decay_memories():
+    con = db()
     try:
-        con = db()
         con.execute("""
             update user_memories 
             set weight = weight - (julianday('now') - julianday(updated_at)) * 0.1
         """)
         con.execute("delete from user_memories where weight <= 0")
         con.commit()
-        con.close()
         print("[Scheduler] Memory time-decay applied successfully.")
     except Exception as e:
         print(f"[Scheduler] Failed to decay memories: {e}")
+    finally:
+        con.close()
 
 
 def summary(con):

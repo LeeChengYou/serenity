@@ -5,6 +5,19 @@ const money = (v) => v == null ? '-' : `$${Number(v).toFixed(2)}`;
 const clip = (s, n = 220) => (s || '').length > n ? `${s.slice(0, n)}...` : (s || '');
 const dateOnly = (v) => (v || '').slice(0, 10);
 
+function showToast(msg, type = 'info', duration = 4000) {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  toast.offsetHeight;
+  toast.classList.add('show');
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
 // Tab switching inside detail panel
 window.switchDetailTab = function(tab) {
   const chartBtn = $('tabChartBtn');
@@ -152,15 +165,15 @@ window.triggerScorecardGeneration = async function(isRegen = false) {
       if (result.success) {
         state.scorecardData = await json(`/api/scorecard/${encodeURIComponent(symbol)}`);
         renderScorecard(symbol, state.scorecardData);
-        alert(`$${symbol} AI 供應鏈瓶頸分析已更新完成！`);
+        showToast(`$${symbol} AI 供應鏈瓶頸分析已更新完成！`, 'info');
       } else {
-        alert(`產生分析失敗：${result.error || '未知錯誤'}`);
+        showToast(`產生分析失敗：${result.error || '未知錯誤'}`, 'error');
       }
     } else {
-      alert(`伺服器錯誤 ${res.status}`);
+      showToast(`伺服器錯誤 ${res.status}`, 'error');
     }
   } catch (err) {
-    alert(`連線錯誤：${err.message}`);
+    showToast(`連線錯誤：${err.message}`, 'error');
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -222,13 +235,25 @@ async function init() {
   } catch (err) {
     console.error("Failed to load backend config:", err);
   }
-  const summary = await json('/api/summary');
-  state.symbols = summary.symbols || [];
-  renderKpis(summary.stats || {});
-  renderSymbols();
-  renderFeed((await json('/api/feed?limit=36')).items || []);
-  const first = state.symbols.find(s => s.has_prices) || state.symbols[0];
-  if (first) selectSymbol(first.symbol);
+
+  try {
+    const summary = await json('/api/summary');
+    state.symbols = summary.symbols || [];
+    renderKpis(summary.stats || {});
+    renderSymbols();
+    const first = state.symbols.find(s => s.has_prices) || state.symbols[0];
+    if (first) selectSymbol(first.symbol);
+  } catch (err) {
+    console.error("Failed to load summary:", err);
+    $('symbols').innerHTML = '<p style="padding: 16px; color: var(--muted); font-size: 13px;">⚠️ 載入股票清單失敗，請稍候重試。</p>';
+  }
+
+  try {
+    const feed = await json('/api/feed?limit=36');
+    renderFeed(feed.items || []);
+  } catch (err) {
+    console.error("Failed to load feed:", err);
+  }
   
   updateMemoryStatus();
 }
@@ -264,8 +289,14 @@ function renderSymbols() {
 }
 
 async function selectSymbol(symbol) {
+  const prevActive = state.active;
   state.active = symbol;
-  renderSymbols();
+  
+  // Toggle active class without rebuilding the whole symbols panel
+  document.querySelectorAll('.symbol-row').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.symbol === symbol);
+  });
+  
   const data = await json(`/api/symbol/${encodeURIComponent(symbol)}`);
   const info = state.symbols.find(s => s.symbol === symbol) || {};
   $('activeTitle').textContent = `$${symbol}`;
@@ -283,6 +314,10 @@ async function selectSymbol(symbol) {
     state.scorecardData = await json(`/api/scorecard/${encodeURIComponent(symbol)}`);
   } catch (err) {
     console.error("Failed to load scorecard:", err);
+    state.scorecardData = null;
+  }
+  renderScorecard(symbol, state.scorecardData);
+}
     state.scorecardData = null;
   }
   
@@ -485,10 +520,17 @@ async function updateMemoryStatus() {
 
 $('chatSend').onclick = sendChatMessage;
 $('chatInput').onkeydown = (e) => {
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
     sendChatMessage();
   }
 };
+
+// Auto resize chat textarea height
+$('chatInput').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
 
 $('chatModel').addEventListener('change', (e) => {
   const customInput = $('customModelInput');
@@ -517,10 +559,10 @@ $('clearMemoryBtn').onclick = async () => {
         </div>
       `;
       updateMemoryStatus();
-      alert("本機長期記憶與歷史對話已完全清空！");
+      showToast("本機長期記憶與歷史對話已完全清空！", "info");
     }
   } catch (err) {
-    alert("清空記憶失敗：" + err.message);
+    showToast("清空記憶失敗：" + err.message, "error");
   }
 };
 

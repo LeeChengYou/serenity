@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import html
 import json
+import math
 import os
 import re
 import shlex
@@ -192,63 +193,71 @@ def extract_symbols(text, legacy, note):
 
 def ingest_page(con, source, body, data, cursor):
     now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    con.execute(
-        "insert or ignore into raw_pages(source, cursor, fetched_at, body) values (?, ?, ?, ?)",
-        (source, cursor or "", now, body),
-    )
-    tweets = {}
-    for node in walk(data):
-        t = normalize_tweet(node)
-        if t:
-            tweets[t["tweet_id"]] = t
-    for t in tweets.values():
+    con.execute("BEGIN TRANSACTION")
+    try:
         con.execute(
-            """insert into tweets(tweet_id, source, author_id, author_screen_name, created_at, text, url,
-                   favorite_count, reply_count, retweet_count, quote_count, raw_json)
-               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               on conflict(tweet_id) do update set
-                   source=excluded.source, created_at=excluded.created_at, text=excluded.text, url=excluded.url,
-                   favorite_count=excluded.favorite_count, reply_count=excluded.reply_count,
-                   retweet_count=excluded.retweet_count, quote_count=excluded.quote_count, raw_json=excluded.raw_json""",
-            (t["tweet_id"], source, t["author_id"], t["author_screen_name"], t["created_at"], t["text"], t["url"],
-             t["favorite_count"], t["reply_count"], t["retweet_count"], t["quote_count"], t["raw_json"]),
+            "insert or ignore into raw_pages(source, cursor, fetched_at, body) values (?, ?, ?, ?)",
+            (source, cursor or "", now, body),
         )
-        for symbol in t["symbols"]:
+        tweets = {}
+        for node in walk(data):
+            t = normalize_tweet(node)
+            if t:
+                tweets[t["tweet_id"]] = t
+        for t in tweets.values():
             con.execute(
-                "insert or ignore into mentions(symbol, tweet_id, mentioned_at, text, source) values (?, ?, ?, ?, ?)",
-                (symbol, t["tweet_id"], t["created_at"], t["text"], source),
+                """insert into tweets(tweet_id, source, author_id, author_screen_name, created_at, text, url,
+                       favorite_count, reply_count, retweet_count, quote_count, raw_json)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   on conflict(tweet_id) do update set
+                       source=excluded.source, created_at=excluded.created_at, text=excluded.text, url=excluded.url,
+                       favorite_count=excluded.favorite_count, reply_count=excluded.reply_count,
+                       retweet_count=excluded.retweet_count, quote_count=excluded.quote_count, raw_json=excluded.raw_json""",
+                (t["tweet_id"], source, t["author_id"], t["author_screen_name"], t["created_at"], t["text"], t["url"],
+                 t["favorite_count"], t["reply_count"], t["retweet_count"], t["quote_count"], t["raw_json"]),
             )
-    return len(tweets)
+            for symbol in t["symbols"]:
+                con.execute(
+                    "insert or ignore into mentions(symbol, tweet_id, mentioned_at, text, source) values (?, ?, ?, ?, ?)",
+                    (symbol, t["tweet_id"], t["created_at"], t["text"], source),
+                )
+        con.execute("COMMIT")
+        return len(tweets)
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
 
 
 def fetch_x(max_pages=20, pause=0.8):
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     con = connect()
-    total = 0
-    for source, filename in CURL_FILES.items():
-        cursor = None
-        seen = set()
-        for page in range(max_pages):
-            if cursor in seen:
-                break
-            seen.add(cursor)
-            print(f"fetch {source} page={page + 1} cursor={'initial' if not cursor else cursor[:18]}")
-            try:
-                body, data = curl_fetch(X_CURL_DIR / filename, cursor)
-            except Exception as exc:
-                print(f"  stop {source}: {exc}", file=sys.stderr)
-                break
-            raw_path = RAW_DIR / f"{source}_{page + 1}.json"
-            raw_path.write_text(body, encoding="utf-8")
-            n = ingest_page(con, source, body, data, cursor)
-            con.commit()
-            total += n
-            next_cursor = find_bottom_cursor(data)
-            if not next_cursor or next_cursor == cursor or n == 0:
-                break
-            cursor = next_cursor
-            time.sleep(pause)
-    print(f"saved/updated {total} tweet rows into {DB_PATH}")
+    try:
+        total = 0
+        for source, filename in CURL_FILES.items():
+            cursor = None
+            seen = set()
+            for page in range(max_pages):
+                if cursor in seen:
+                    break
+                seen.add(cursor)
+                print(f"fetch {source} page={page + 1} cursor={'initial' if not cursor else cursor[:18]}")
+                try:
+                    body, data = curl_fetch(X_CURL_DIR / filename, cursor)
+                except Exception as exc:
+                    print(f"  stop {source}: {exc}", file=sys.stderr)
+                    break
+                raw_path = RAW_DIR / f"{source}_{page + 1}.json"
+                raw_path.write_text(body, encoding="utf-8")
+                n = ingest_page(con, source, body, data, cursor)
+                total += n
+                next_cursor = find_bottom_cursor(data)
+                if not next_cursor or next_cursor == cursor or n == 0:
+                    break
+                cursor = next_cursor
+                time.sleep(pause)
+        print(f"saved/updated {total} tweet rows into {DB_PATH}")
+    finally:
+        con.close()
 
 
 def symbol_list(con, min_mentions=2):
@@ -261,66 +270,86 @@ def symbol_list(con, min_mentions=2):
     return [r[0] for r in rows]
 
 
-def yahoo_chart(symbol, start, end):
+def yahoo_chart(symbol, start, end, max_retries=3):
     period1 = int(start.timestamp())
     period2 = int(end.timestamp())
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}?period1={period1}&period2={period2}&interval=1d&events=history"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  [WARN] {symbol}: Yahoo 429 Rate Limited. Retrying in {wait}s...", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                print(f"  [WARN] {symbol}: Network error/timeout ({e}). Retrying in {wait}s...", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise
 
 
 def fetch_prices(days_back=420, min_mentions=2):
     con = connect()
-    symbols = symbol_list(con, min_mentions)
-    if not symbols:
-        print("no symbols yet; run fetch-x first")
-        return
-    today = dt.datetime.now(dt.timezone.utc)
-    for symbol in symbols:
-        try:
-            # Query the latest date in DB for this symbol
-            row = con.execute("select max(date) from prices where symbol=?", (symbol,)).fetchone()
-            latest_date_str = row[0] if row else None
-            
-            # Determine start date
-            if latest_date_str:
-                latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
-                days_diff = (today - latest_dt).days
-                if days_diff <= 1:
-                    print(f"price {symbol} - already up to date (latest: {latest_date_str})")
-                    continue
-                fetch_start = latest_dt + dt.timedelta(days=1)
-                print(f"price {symbol} - incremental from {fetch_start.date()} (latest: {latest_date_str})")
-            else:
-                fetch_start = today - dt.timedelta(days=days_back)
-                print(f"price {symbol} - full fetch from {fetch_start.date()}")
+    try:
+        symbols = symbol_list(con, min_mentions)
+        if not symbols:
+            print("no symbols yet; run fetch-x first")
+            return
+        today = dt.datetime.now(dt.timezone.utc)
+        for symbol in symbols:
+            try:
+                # Query the latest date in DB for this symbol
+                row = con.execute("select max(date) from prices where symbol=?", (symbol,)).fetchone()
+                latest_date_str = row[0] if row else None
                 
-            data = yahoo_chart(symbol, fetch_start, today + dt.timedelta(days=2))
-            result = (data.get("chart") or {}).get("result") or []
-            if not result:
-                print(f"  no yahoo result for {symbol}")
-                continue
-            res = result[0]
-            timestamps = res.get("timestamp") or []
-            quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
-            closes = quote.get("close") or []
-            volumes = quote.get("volume") or []
-            inserted = 0
-            for ts, close, vol in zip(timestamps, closes, volumes):
-                if close is None:
+                # Determine start date
+                if latest_date_str:
+                    latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+                    days_diff = (today - latest_dt).days
+                    if days_diff <= 1:
+                        print(f"price {symbol} - already up to date (latest: {latest_date_str})")
+                        continue
+                    fetch_start = latest_dt + dt.timedelta(days=1)
+                    print(f"price {symbol} - incremental from {fetch_start.date()} (latest: {latest_date_str})")
+                else:
+                    fetch_start = today - dt.timedelta(days=days_back)
+                    print(f"price {symbol} - full fetch from {fetch_start.date()}")
+                    
+                data = yahoo_chart(symbol, fetch_start, today + dt.timedelta(days=2))
+                result = (data.get("chart") or {}).get("result") or []
+                if not result:
+                    print(f"  no yahoo result for {symbol}")
                     continue
-                date = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat()
-                con.execute(
-                    "insert or replace into prices(symbol, date, close, volume) values (?, ?, ?, ?)",
-                    (symbol, date, float(close), int(vol or 0)),
-                )
-                inserted += 1
-            con.commit()
-            print(f"  {inserted} bars")
-            time.sleep(0.2)
-        except Exception as exc:
-            print(f"  failed {symbol}: {exc}", file=sys.stderr)
+                res = result[0]
+                timestamps = res.get("timestamp") or []
+                quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
+                closes = quote.get("close") or []
+                volumes = quote.get("volume") or []
+                inserted = 0
+                for ts, close, vol in zip(timestamps, closes, volumes):
+                    if close is None or math.isnan(float(close)) or float(close) <= 0 or float(close) > 100000:
+                        continue
+                    date = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat()
+                    con.execute(
+                        "insert or replace into prices(symbol, date, close, volume) values (?, ?, ?, ?)",
+                        (symbol, date, float(close), int(vol or 0) if vol is not None else None),
+                    )
+                    inserted += 1
+                con.commit()
+                print(f"  {inserted} bars")
+                time.sleep(0.2)
+            except Exception as exc:
+                print(f"  failed {symbol}: {exc}", file=sys.stderr)
+    finally:
+        con.close()
 
 
 def main():
@@ -336,11 +365,14 @@ def main():
         fetch_prices(args.days, args.min_mentions)
     if args.command == "stats":
         con = connect()
-        print("tweets", con.execute("select count(*) from tweets").fetchone()[0])
-        print("mentions", con.execute("select count(*) from mentions").fetchone()[0])
-        print("prices", con.execute("select count(*) from prices").fetchone()[0])
-        for row in con.execute("select symbol, count(*) c, min(mentioned_at), max(mentioned_at) from mentions group by symbol order by c desc, symbol"):
-            print(dict(row))
+        try:
+            print("tweets", con.execute("select count(*) from tweets").fetchone()[0])
+            print("mentions", con.execute("select count(*) from mentions").fetchone()[0])
+            print("prices", con.execute("select count(*) from prices").fetchone()[0])
+            for row in con.execute("select symbol, count(*) c, min(mentioned_at), max(mentioned_at) from mentions group by symbol order by c desc, symbol"):
+                print(dict(row))
+        finally:
+            con.close()
 
 
 if __name__ == "__main__":

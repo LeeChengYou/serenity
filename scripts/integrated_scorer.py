@@ -32,6 +32,8 @@ except ImportError:
 
 def save_scorecard_to_db(db_path: Path, symbol: str, res: dict) -> None:
     con = sqlite3.connect(db_path)
+    con.execute("pragma journal_mode=wal")
+    con.row_factory = sqlite3.Row
     try:
         con.execute("""
             create table if not exists scorecards (

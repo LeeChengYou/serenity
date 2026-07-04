@@ -13,7 +13,8 @@ DB_PATH = ROOT / "data" / "serenity.sqlite"
 
 
 def fetch_ohlc(exchange: str, tv_symbol: str, timeframe: str, candles: int):
-    logging.disable(logging.CRITICAL)
+    logging.getLogger("tradingview_scraper").setLevel(logging.CRITICAL)
+    logging.getLogger("websocket").setLevel(logging.CRITICAL)
     streamer = Streamer(export_result=False)
     result = streamer.stream(
         exchange=exchange,
@@ -33,17 +34,36 @@ def fetch_ohlc(exchange: str, tv_symbol: str, timeframe: str, candles: int):
 
 
 def save_prices(rows, db_symbol: str):
+    import math
     con = sqlite3.connect(DB_PATH)
-    inserted = 0
-    for row in rows:
-        date = dt.datetime.fromtimestamp(row["timestamp"], dt.timezone.utc).date().isoformat()
-        con.execute(
-            "insert or replace into prices(symbol, date, close, volume) values (?, ?, ?, ?)",
-            (db_symbol.upper(), date, float(row["close"]), int(row.get("volume") or 0)),
-        )
-        inserted += 1
-    con.commit()
-    return inserted
+    con.execute("pragma journal_mode=wal")
+    try:
+        con.execute("""
+            create table if not exists prices (
+                symbol text not null,
+                date text not null,
+                close real not null,
+                volume integer,
+                unique(symbol, date)
+            );
+        """)
+        inserted = 0
+        for row in rows:
+            if "timestamp" not in row or "close" not in row or row["close"] is None:
+                continue
+            close_val = float(row["close"])
+            if math.isnan(close_val) or close_val <= 0 or close_val > 100000:
+                continue
+            date = dt.datetime.fromtimestamp(row["timestamp"], dt.timezone.utc).date().isoformat()
+            con.execute(
+                "insert or replace into prices(symbol, date, close, volume) values (?, ?, ?, ?)",
+                (db_symbol.upper(), date, close_val, int(row.get("volume") or 0) if row.get("volume") is not None else None),
+            )
+            inserted += 1
+        con.commit()
+        return inserted
+    finally:
+        con.close()
 
 
 def main():

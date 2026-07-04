@@ -23,6 +23,7 @@ ENV/
 data/serenity.sqlite
 data/serenity.sqlite-*
 data/raw/*.json
+data/chat_monitor.json
 export/
 
 # Browser-copied X curl commands contain cookies/tokens
