@@ -28,6 +28,19 @@ except ImportError:
     _spec.loader.exec_module(_mod)
     _compute_indicators = _mod.compute_all
 
+# Signal rules engine (SPEC F-06 / F-07)
+try:
+    from signals import evaluate_signal as _evaluate_signal
+except ImportError:
+    import importlib.util as _ilu2
+    _spec2 = _ilu2.spec_from_file_location(
+        "signals",
+        Path(__file__).resolve().parent / "signals.py",
+    )
+    _mod2 = _ilu2.module_from_spec(_spec2)
+    _spec2.loader.exec_module(_mod2)
+    _evaluate_signal = _mod2.evaluate_signal
+
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "serenity.sqlite"
 STATIC_DIR = ROOT / "dashboard"
@@ -106,6 +119,26 @@ def _init_schema(con):
         create index if not exists idx_user_memories_weight on user_memories(weight desc);
         create index if not exists idx_scorecards_symbol on scorecards(symbol);
     """)
+    # Idempotent: scorecard_history table (SPEC F-03)
+    con.execute("""
+        create table if not exists scorecard_history (
+            id          integer primary key autoincrement,
+            symbol      text not null,
+            final_score real not null,
+            verdict     text,
+            factors_json text,
+            penalties_json text,
+            model_used  text,
+            created_at  text default (datetime('now'))
+        )
+    """)
+    try:
+        con.execute(
+            "create index if not exists idx_scorecard_history_symbol "
+            "on scorecard_history (symbol, created_at)"
+        )
+    except Exception:
+        pass
     for idx_name, tbl_name, col in [
         ("idx_mentions_symbol", "mentions", "symbol"),
         ("idx_prices_symbol_date", "prices", "symbol, date"),
@@ -211,6 +244,17 @@ class Handler(SimpleHTTPRequestHandler):
             if path.startswith("/api/symbol/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 return symbol_payload(con, symbol)
+            if path.startswith("/api/signal/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                return signal_payload(con, symbol)
+            if path.startswith("/api/scorecard/history/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                rows = [dict(r) for r in con.execute(
+                    "select id, symbol, final_score, verdict, created_at "
+                    "from scorecard_history where symbol=? order by created_at asc",
+                    (symbol,),
+                )]
+                return {"symbol": symbol, "history": rows}
             if path.startswith("/api/scorecard/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 row = con.execute("select * from scorecards where symbol=?", (symbol,)).fetchone()
@@ -354,8 +398,31 @@ class Handler(SimpleHTTPRequestHandler):
                     verdict = "Early lead or low priority"
                     
                 now_str = datetime.now().isoformat()
+                model_name_used = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
                 con = db()
                 try:
+                    # Task D (SPEC F-03): archive existing scorecard to history
+                    # BEFORE overwriting, so the timeline is always append-only.
+                    existing = con.execute(
+                        "select final_score, verdict, factors_json, penalties_json "
+                        "from scorecards where symbol=?", (symbol,)
+                    ).fetchone()
+                    if existing:
+                        con.execute(
+                            "insert into scorecard_history "
+                            "(symbol, final_score, verdict, factors_json, penalties_json, model_used, created_at) "
+                            "values (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                symbol,
+                                existing[0],
+                                existing[1],
+                                existing[2],
+                                existing[3],
+                                model_name_used,
+                                now_str,
+                            ),
+                        )
+
                     con.execute("""
                         insert into scorecards (
                             symbol, company, market, final_score, verdict, 
@@ -766,6 +833,102 @@ def symbol_payload(con, symbol):
         "mentions": mentions,
         "neighbors": neighbors,
     }
+
+
+def signal_payload(con, symbol: str) -> dict:
+    """
+    Build the /api/signal/<SYM> response (SPEC F-06 / F-07).
+
+    Pulls real OHLCV bars and scorecard score from the database, computes
+    indicators via indicators.compute_all, then delegates to
+    signals.evaluate_signal for the rules engine.  Never fabricates prices
+    or returns.
+    """
+    # Fetch real OHLCV bars, oldest-first
+    bars = [dict(r) for r in con.execute(
+        "select date, open, high, low, close, volume "
+        "from prices where symbol=? order by date",
+        (symbol,),
+    )]
+
+    if not bars:
+        return {
+            "symbol": symbol,
+            "signal": "NEUTRAL",
+            "conditions": [],
+            "entry_zone": None,
+            "stop_loss": None,
+            "risk_per_share": None,
+            "target": None,
+            "rr_ratio": None,
+            "atr14": None,
+            "score": None,
+            "insufficient_data": True,
+        }
+
+    # Latest close from real data
+    latest_close = None
+    for b in reversed(bars):
+        c = b.get("close")
+        if c is not None:
+            try:
+                latest_close = float(c)
+                break
+            except (TypeError, ValueError):
+                pass
+
+    if latest_close is None:
+        return {
+            "symbol": symbol,
+            "signal": "NEUTRAL",
+            "conditions": [],
+            "entry_zone": None,
+            "stop_loss": None,
+            "risk_per_share": None,
+            "target": None,
+            "rr_ratio": None,
+            "atr14": None,
+            "score": None,
+            "insufficient_data": True,
+        }
+
+    # Compute indicators from real bars
+    try:
+        indicators = _compute_indicators(bars)
+    except Exception as exc:
+        indicators = {}
+
+    # Fetch current and previous scorecard scores (real, not synthesised)
+    score = None
+    prev_score = None
+    sc_row = con.execute(
+        "select final_score from scorecards where symbol=?", (symbol,)
+    ).fetchone()
+    if sc_row:
+        score = sc_row[0]
+
+    # Previous score from scorecard_history (second-most-recent entry)
+    hist_rows = con.execute(
+        "select final_score from scorecard_history where symbol=? "
+        "order by created_at desc limit 2",
+        (symbol,),
+    ).fetchall()
+    if len(hist_rows) >= 2:
+        prev_score = hist_rows[1][0]
+    elif len(hist_rows) == 1 and score is not None:
+        # Only one history row; compare against it
+        prev_score = hist_rows[0][0]
+
+    result = _evaluate_signal(
+        latest_close=latest_close,
+        indicators=indicators,
+        score=score,
+        bars=bars,
+        prev_score=prev_score,
+        rr_ratio=2.0,
+    )
+    result["symbol"] = symbol
+    return result
 
 
 def run_background_ingest():
