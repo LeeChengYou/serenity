@@ -1668,6 +1668,26 @@ def write_validation_md(
                 )
         lines.append("")
 
+    # --- Supervisor addendum: permanent interpretation caveats. Lives inside
+    # the generator so full regenerations cannot silently drop it. ---
+    lines.append("---")
+    lines.append("")
+    lines.append("## 監管者附註（Fable 審查後補充，隨報告永久保留）")
+    lines.append("")
+    lines.append("1. **重疊窗口警告**：cutoff 每 15 天一個、持有期 30 天 → 相鄰窗口約有一半")
+    lines.append("   時間重疊，且同窗口內個股高度相關（同為 AI/半導體）。統計上有效樣本數")
+    lines.append("   遠小於表列 n；解讀任何 excess < ±2pp 的結果應視為「無差異」。")
+    lines.append("2. **OVERBOUGHT 超額報酬的解讀**：這是動能延續現象（漲勢中 RSI>75 續漲），")
+    lines.append("   符合 2025-26 多頭環境；把它當「買進訊號」前必須等跨越空頭窗口的驗證——")
+    lines.append("   目前資料以多頭月份為主，動能策略在轉折點的虧損不對稱。")
+    lines.append("3. **可執行的當前共識**：(a) 不追高熱延伸股（兩輪驗證一致，證據最強）；")
+    lines.append("   (b) 拉回進場方向值得繼續累積樣本（B 變體 71% 勝率但 n=7）；")
+    lines.append("   (c) EXIT_ALERT 當風控提示用，勿當反向做多訊號。")
+    lines.append("4. **B-4 閾值掃描的統計上限**：BUY_WATCH 全樣本僅 n≈35（21 窗口平均每窗不到")
+    lines.append("   2 筆觀察），任何閾值調整都無法克服此樣本量限制。score≥60 略優於 score≥70")
+    lines.append("   的形態與 recency 權重假說一致，但尚不足以據此改動線上預設值。")
+    lines.append("")
+
     out_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"[multiwindow] VALIDATION.md written to {out_path}")
 
