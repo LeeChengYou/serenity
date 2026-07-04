@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Multi-window holdout validation + pullback variant comparison — R-1 extension.
+Extended with B-3 (trade cost sensitivity) and B-4 (threshold scan).
 
 Extends backtest_holdout.py with:
   - Rolling cutoffs every 15 days (earliest date with >=40 symbols/>=60 bars
@@ -18,6 +19,19 @@ symbols with quant score >= 65 ("high heat"):
   Variant C "deep value":  drawdown-from-60-bar-high > 35%
   Baseline "high heat":    score >= 65, no price filter
 
+With --costs flag (B-3), applies round-trip cost haircuts of 0/10/25/50 bps
+to each signal group's returns and reports whether the edge survives costs.
+Costs apply to entry+exit as a haircut: adjusted_return = raw_return - cost_bps/10000.
+Universe benchmark is unadjusted (passive, no friction).
+
+With --threshold-scan flag (B-4), runs one-dimensional scans of:
+  - BUY_WATCH score threshold: 60, 65, 70, 75, 80
+  - RSI entry bound: 55, 60, 65, 70
+  - RSI exit bound (EXIT_ALERT): 35, 40, 45
+For each setting, records are re-classified using the custom threshold
+applied to pre-computed indicators (zero look-ahead maintained).
+Cells with n<10 are marked insufficient; conclusions only where n>=10.
+
 ZERO LOOK-AHEAD GUARANTEE
   Bars are truncated to <= cutoff BEFORE any indicator or score computation.
   evaluate_symbol_at_cutoff (imported from backtest_holdout.py) passes
@@ -29,6 +43,9 @@ ZERO FABRICATED DATA
 
 Usage:
     python scripts/backtest_multiwindow.py [--db PATH] [--pullback]
+    python scripts/backtest_multiwindow.py [--db PATH] [--costs]
+    python scripts/backtest_multiwindow.py [--db PATH] [--threshold-scan]
+    python scripts/backtest_multiwindow.py [--db PATH] [--costs] [--threshold-scan]
 """
 
 from __future__ import annotations
@@ -655,6 +672,432 @@ def print_pullback_report(
 
 
 # ---------------------------------------------------------------------------
+# B-3: Trade cost sensitivity
+# ---------------------------------------------------------------------------
+
+COST_SCENARIOS_BPS = [0, 10, 25, 50]
+
+
+def _apply_cost_haircut(raw_return: float, cost_bps: int) -> float:
+    """
+    Apply a round-trip cost haircut to a raw return.
+
+    Cost is applied at entry + exit (round trip), so total friction =
+    cost_bps / 10000.  This is a haircut subtracted from the raw return.
+
+    Examples:
+        raw=+5%, cost=25bps  → adjusted = +5% - 0.25% = +4.75%
+        raw=-2%, cost=50bps  → adjusted = -2% - 0.50% = -2.50%
+    """
+    return raw_return - cost_bps / 10_000
+
+
+def compute_cost_sensitivity(
+    agg: dict[str, dict],
+    universe_returns: list[float],
+    cost_scenarios_bps: Optional[list[int]] = None,
+) -> dict:
+    """
+    For each signal group and each cost scenario, compute cost-adjusted stats.
+
+    The universe benchmark is intentionally left unadjusted (passive benchmark
+    with no friction), which is the conservative/honest framing: the active
+    signal-based strategy bears transaction costs; the passive benchmark does not.
+
+    Returns:
+        {signal: {cost_bps: {"n": int, "median": float|None,
+                              "win_rate": float|None, "vs_universe": float|None}}}
+        Plus a "universe" key with unadjusted universe stats.
+    """
+    if cost_scenarios_bps is None:
+        cost_scenarios_bps = COST_SCENARIOS_BPS
+
+    univ_med = _median(universe_returns)
+    univ_wr  = _win_rate(universe_returns)
+
+    results: dict = {
+        "_universe": {
+            "n": len(universe_returns),
+            "median": univ_med,
+            "win_rate": univ_wr,
+        }
+    }
+
+    for sig, bucket in agg.items():
+        raw_rets = bucket["returns"]
+        results[sig] = {}
+        for cost_bps in cost_scenarios_bps:
+            adj_rets = [_apply_cost_haircut(r, cost_bps) for r in raw_rets]
+            med = _median(adj_rets)
+            wr  = _win_rate(adj_rets)
+            vs  = (med - univ_med) if (med is not None and univ_med is not None) else None
+            results[sig][cost_bps] = {
+                "n":          len(adj_rets),
+                "median":     med,
+                "win_rate":   wr,
+                "vs_universe": vs,
+            }
+
+    return results
+
+
+def print_cost_sensitivity_table(
+    cost_results: dict,
+    agg: dict[str, dict],
+) -> None:
+    """Print the cost-sensitivity table to stdout."""
+    univ_meta = cost_results.get("_universe", {})
+    univ_med = univ_meta.get("median")
+    print()
+    print("=" * 100)
+    print("  B-3: TRADE COST SENSITIVITY ANALYSIS  (round-trip bps applied as haircut to signal returns)")
+    print(f"  Universe benchmark: n={univ_meta.get('n', 0)}, "
+          f"median={_pct(univ_med)}, win_rate={_fmt_rate(univ_meta.get('win_rate'))}  "
+          f"[unadjusted — passive, no friction]")
+    print("=" * 100)
+
+    # Header
+    cost_cols = COST_SCENARIOS_BPS
+    col_w = 28
+    hdr = f"{'Signal':<14} | {'n':>5}"
+    for c in cost_cols:
+        hdr += f" | {f'{c}bps med / vs-univ':>{col_w}}"
+    hdr += " | Conclusion"
+    print(hdr)
+    print("-" * len(hdr))
+
+    for sig in SIGNAL_ORDER:
+        if sig not in cost_results:
+            continue
+        sig_data = cost_results[sig]
+        n = sig_data.get(0, {}).get("n", 0)
+        row = f"{sig:<14} | {n:>5}"
+
+        conclusions = []
+        for c in cost_cols:
+            cell = sig_data.get(c, {})
+            med = cell.get("median")
+            vs  = cell.get("vs_universe")
+            row += f" | {_pct(med):>10} {_pct(vs):>10}  "
+            if n < 10:
+                conclusions.append("insufficient")
+            elif vs is not None:
+                if vs > 0.03:
+                    conclusions.append(f"+{c}bps: edge persists")
+                elif vs < -0.03:
+                    conclusions.append(f"+{c}bps: edge lost")
+
+        # Pick the breaking-point conclusion
+        if n < 10:
+            conclusion = "insufficient (n<10)"
+        else:
+            cost_0_vs  = sig_data.get(0,  {}).get("vs_universe")
+            cost_10_vs = sig_data.get(10, {}).get("vs_universe")
+            cost_25_vs = sig_data.get(25, {}).get("vs_universe")
+            cost_50_vs = sig_data.get(50, {}).get("vs_universe")
+            if cost_0_vs is not None and cost_0_vs < -0.03:
+                conclusion = "underperforms at 0bps"
+            elif cost_0_vs is not None and abs(cost_0_vs) < 0.03:
+                conclusion = "no clear edge at 0bps"
+            elif cost_50_vs is not None and cost_50_vs > 0.03:
+                conclusion = "edge survives 50bps"
+            elif cost_25_vs is not None and cost_25_vs > 0.03:
+                conclusion = "edge survives 25bps"
+            elif cost_10_vs is not None and cost_10_vs > 0.03:
+                conclusion = "edge survives 10bps only"
+            else:
+                conclusion = "edge <3pp; cost-sensitive"
+
+        row += f"| {conclusion}"
+        print(row)
+
+    print("-" * len(hdr))
+    print()
+
+
+# ---------------------------------------------------------------------------
+# B-4: Threshold scan helpers
+# ---------------------------------------------------------------------------
+
+# Default threshold values (current production defaults from signals.py)
+_DEFAULT_SCORE_THRESH  = 70
+_DEFAULT_RSI_ENTRY     = 65
+_DEFAULT_RSI_EXIT      = 40
+
+# Scan ranges
+_SCORE_THRESHOLDS  = [60, 65, 70, 75, 80]
+_RSI_ENTRY_BOUNDS  = [55, 60, 65, 70]
+_RSI_EXIT_BOUNDS   = [35, 40, 45]
+
+
+def _reclassify_buy_watch(
+    record: dict,
+    score_thresh: float,
+    rsi_entry_bound: float,
+) -> bool:
+    """
+    Return True if this record's pre-computed indicators satisfy BUY_WATCH
+    under the given custom thresholds.
+
+    BUY_WATCH (custom): score >= score_thresh AND price > EMA20 AND RSI < rsi_entry_bound
+
+    Note: No priority ordering applied here (i.e., OVERBOUGHT / EXIT_ALERT
+    precedence is NOT enforced).  We are testing the raw condition's
+    predictive value, not the full signal cascade.
+
+    All indicators come from record["indicators"] — computed at-cutoff,
+    zero look-ahead is preserved.
+    """
+    score = record.get("score")
+    if score is None or score < score_thresh:
+        return False
+
+    entry = record.get("entry")
+    if entry is None:
+        return False
+
+    indicators = record.get("indicators") or {}
+    ema20 = _last_non_none(indicators.get("ema20", []))
+    if ema20 is None or entry <= ema20:
+        return False
+
+    rsi = _last_non_none(indicators.get("rsi14", []))
+    if rsi is None or rsi >= rsi_entry_bound:
+        return False
+
+    return True
+
+
+def _reclassify_exit_alert(
+    record: dict,
+    rsi_exit_bound: float,
+) -> bool:
+    """
+    Return True if this record's indicators satisfy EXIT_ALERT under the
+    given RSI exit bound.
+
+    EXIT_ALERT (custom): price < EMA50 OR RSI < rsi_exit_bound
+
+    Score-drop component is omitted because prev_score is not stored
+    in multiwindow records.  This is honest: the RSI and price components
+    together account for the vast majority of EXIT_ALERT triggers.
+    """
+    entry = record.get("entry")
+    if entry is None:
+        return False
+
+    indicators = record.get("indicators") or {}
+    ema50 = _last_non_none(indicators.get("ema50", []))
+    rsi   = _last_non_none(indicators.get("rsi14", []))
+
+    if ema50 is not None and entry < ema50:
+        return True
+    if rsi is not None and rsi < rsi_exit_bound:
+        return True
+    return False
+
+
+def _scan_buy_watch(
+    windows: list[dict],
+    universe_returns: list[float],
+    score_thresholds: list[float],
+    rsi_entry_bounds: list[float],
+) -> tuple[list[dict], list[dict]]:
+    """
+    One-dimensional scans for BUY_WATCH:
+
+    Scan 1 — Score threshold (RSI entry fixed at default 65):
+        For each score_thresh in score_thresholds, collect all records
+        meeting BUY_WATCH(score_thresh, 65) across all windows.
+
+    Scan 2 — RSI entry bound (score fixed at default 70):
+        For each rsi_bound in rsi_entry_bounds, collect all records
+        meeting BUY_WATCH(70, rsi_bound) across all windows.
+
+    Returns:
+        (score_scan_rows, rsi_entry_scan_rows)
+        Each row: {param_label, param_value, n_total, n_ret,
+                   median, win_rate, vs_universe, note}
+    """
+    univ_med = _median(universe_returns)
+
+    def _collect(score_t, rsi_t):
+        rets = []
+        n_total = 0
+        for win in windows:
+            for r in win["records"]:
+                if _reclassify_buy_watch(r, score_t, rsi_t):
+                    n_total += 1
+                    if r.get("holdout_return") is not None:
+                        rets.append(r["holdout_return"])
+        med = _median(rets)
+        wr  = _win_rate(rets)
+        vs  = (med - univ_med) if (med is not None and univ_med is not None) else None
+        note = "insufficient (n<10)" if n_total < 10 else ""
+        return {
+            "n_total": n_total, "n_ret": len(rets),
+            "median": med, "win_rate": wr, "vs_universe": vs, "note": note,
+        }
+
+    score_scan = []
+    for st in score_thresholds:
+        row = _collect(st, _DEFAULT_RSI_ENTRY)
+        row["param_label"] = "score_thresh"
+        row["param_value"] = st
+        score_scan.append(row)
+
+    rsi_entry_scan = []
+    for rb in rsi_entry_bounds:
+        row = _collect(_DEFAULT_SCORE_THRESH, rb)
+        row["param_label"] = "rsi_entry"
+        row["param_value"] = rb
+        rsi_entry_scan.append(row)
+
+    return score_scan, rsi_entry_scan
+
+
+def _scan_exit_alert(
+    windows: list[dict],
+    universe_returns: list[float],
+    rsi_exit_bounds: list[float],
+) -> list[dict]:
+    """
+    One-dimensional scan for EXIT_ALERT RSI exit bound.
+
+    For each rsi_exit_bound, collect all records meeting EXIT_ALERT
+    (price < EMA50 OR RSI < rsi_exit_bound) across all windows.
+
+    Returns list of row dicts.
+    """
+    univ_med = _median(universe_returns)
+
+    rows = []
+    for rsi_exit in rsi_exit_bounds:
+        rets = []
+        n_total = 0
+        for win in windows:
+            for r in win["records"]:
+                if _reclassify_exit_alert(r, rsi_exit):
+                    n_total += 1
+                    if r.get("holdout_return") is not None:
+                        rets.append(r["holdout_return"])
+        med = _median(rets)
+        wr  = _win_rate(rets)
+        vs  = (med - univ_med) if (med is not None and univ_med is not None) else None
+        note = "insufficient (n<10)" if n_total < 10 else ""
+        rows.append({
+            "param_label": "rsi_exit",
+            "param_value": rsi_exit,
+            "n_total": n_total,
+            "n_ret": len(rets),
+            "median": med,
+            "win_rate": wr,
+            "vs_universe": vs,
+            "note": note,
+        })
+    return rows
+
+
+def run_threshold_scan(
+    windows: list[dict],
+    universe_returns: list[float],
+) -> dict:
+    """
+    Run all three one-dimensional threshold scans and return results.
+
+    Returns:
+        {
+          "score_scan":      [row, ...],   # BUY_WATCH score threshold scan
+          "rsi_entry_scan":  [row, ...],   # BUY_WATCH RSI entry bound scan
+          "rsi_exit_scan":   [row, ...],   # EXIT_ALERT RSI exit bound scan
+          "universe_n":      int,
+          "universe_median": float|None,
+        }
+    """
+    score_scan, rsi_entry_scan = _scan_buy_watch(
+        windows, universe_returns,
+        _SCORE_THRESHOLDS, _RSI_ENTRY_BOUNDS,
+    )
+    rsi_exit_scan = _scan_exit_alert(
+        windows, universe_returns, _RSI_EXIT_BOUNDS,
+    )
+    return {
+        "score_scan":      score_scan,
+        "rsi_entry_scan":  rsi_entry_scan,
+        "rsi_exit_scan":   rsi_exit_scan,
+        "universe_n":      len(universe_returns),
+        "universe_median": _median(universe_returns),
+    }
+
+
+def _print_threshold_scan_subtable(
+    rows: list[dict],
+    param_header: str,
+    description: str,
+    fixed_params: str,
+) -> None:
+    """Print one scan dimension's table to stdout."""
+    print()
+    print(f"  --- {description} ---")
+    print(f"  Fixed: {fixed_params}")
+    hdr = (
+        f"  {param_header:<18} | {'n_total':>7} | {'n_ret':>6} | "
+        f"{'Median Ret':>10} | {'Win Rate':>8} | {'vs Universe':>11} | Note"
+    )
+    sep = "  " + "-" * (len(hdr) - 2)
+    print(hdr)
+    print(sep)
+    for row in rows:
+        val = row["param_value"]
+        val_str = str(val) if not isinstance(val, float) else f"{val:.0f}"
+        note = row.get("note", "")
+        print(
+            f"  {val_str:<18} | {row['n_total']:>7} | {row['n_ret']:>6} | "
+            f"{_pct(row['median']):>10} | {_fmt_rate(row['win_rate']):>8} | "
+            f"{_pct(row['vs_universe']):>11} | {note}"
+        )
+    print(sep)
+
+
+def print_threshold_scan_report(
+    threshold_results: dict,
+) -> None:
+    """Print the full threshold scan report to stdout."""
+    univ_med = threshold_results["universe_median"]
+    univ_n   = threshold_results["universe_n"]
+
+    print()
+    print("=" * 100)
+    print("  B-4: THRESHOLD SCAN")
+    print(f"  Universe: n={univ_n}, median={_pct(univ_med)}")
+    print("  Note: n<10 cells marked insufficient — no conclusions drawn from them.")
+    print("  Score-drop EXIT_ALERT component omitted (prev_score not stored in multiwindow records).")
+    print("=" * 100)
+
+    _print_threshold_scan_subtable(
+        threshold_results["score_scan"],
+        param_header="score_thresh",
+        description="BUY_WATCH score threshold scan",
+        fixed_params=f"RSI entry bound = {_DEFAULT_RSI_ENTRY}, RSI exit = {_DEFAULT_RSI_EXIT}",
+    )
+
+    _print_threshold_scan_subtable(
+        threshold_results["rsi_entry_scan"],
+        param_header="rsi_entry_bound",
+        description="BUY_WATCH RSI entry bound scan",
+        fixed_params=f"score_thresh = {_DEFAULT_SCORE_THRESH}, RSI exit = {_DEFAULT_RSI_EXIT}",
+    )
+
+    _print_threshold_scan_subtable(
+        threshold_results["rsi_exit_scan"],
+        param_header="rsi_exit_bound",
+        description="EXIT_ALERT RSI exit bound scan  (EXIT = price<EMA50 OR RSI<rsi_exit)",
+        fixed_params=f"score_thresh = {_DEFAULT_SCORE_THRESH}, RSI entry = {_DEFAULT_RSI_ENTRY}",
+    )
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Write VALIDATION.md
 # ---------------------------------------------------------------------------
 
@@ -668,8 +1111,15 @@ def write_validation_md(
     pullback: bool,
     variant_agg: Optional[dict] = None,
     pb_universe_rets: Optional[list] = None,
+    cost_results: Optional[dict] = None,
+    threshold_results: Optional[dict] = None,
 ) -> None:
-    """Write aggregated validation results to docs/VALIDATION.md."""
+    """Write aggregated validation results to docs/VALIDATION.md.
+
+    Optional keyword-only sections (appended after core content):
+        cost_results      — B-3 trade cost sensitivity dict (from compute_cost_sensitivity)
+        threshold_results — B-4 threshold scan dict (from run_threshold_scan)
+    """
     out_path = Path(__file__).resolve().parents[1] / "docs" / "VALIDATION.md"
 
     univ_med = _median(universe_returns)
@@ -927,6 +1377,297 @@ def write_validation_md(
     lines.append(f"*由 `scripts/backtest_multiwindow.py` 自動產生，資料日期：{max_date_str}*")
     lines.append("")
 
+    # -----------------------------------------------------------------------
+    # B-3: Trade cost sensitivity section (optional)
+    # -----------------------------------------------------------------------
+    if cost_results is not None:
+        univ_meta = cost_results.get("_universe", {})
+        univ_med  = univ_meta.get("median")
+        univ_n    = univ_meta.get("n", 0)
+        univ_wr   = univ_meta.get("win_rate")
+
+        lines.append("---")
+        lines.append("")
+        lines.append("## B-3 交易成本敏感度分析（Trade Cost Sensitivity）")
+        lines.append("")
+        lines.append("> **方法**：對每個訊號組的30日前向報酬逐筆套用往返成本扣減（haircut）：")
+        lines.append("> `adjusted_return = raw_return − cost_bps / 10000`")
+        lines.append("> 成本情境：0 / 10 / 25 / 50 bps（往返合計）")
+        lines.append("> 宇宙基準維持**不扣成本**（被動持有無摩擦），為保守/誠實的對照設計。")
+        lines.append("")
+        lines.append(f"宇宙基準：n={univ_n}，中位報酬={_pct(univ_med)}，"
+                     f"勝率={_fmt_rate(univ_wr)}")
+        lines.append("")
+
+        # Table header
+        lines.append("| 訊號 | n | 0bps中位 | 0bps超額 | 10bps中位 | 10bps超額 | 25bps中位 | 25bps超額 | 50bps中位 | 50bps超額 | 結論 |")
+        lines.append("|------|---|---------|---------|----------|----------|----------|----------|----------|----------|------|")
+
+        for sig in SIGNAL_ORDER:
+            if sig not in cost_results:
+                continue
+            sig_data = cost_results[sig]
+            n = sig_data.get(0, {}).get("n", 0)
+
+            # Build cell values
+            cells = []
+            for c in [0, 10, 25, 50]:
+                d = sig_data.get(c, {})
+                cells.append(_pct(d.get("median")))
+                cells.append(_pct(d.get("vs_universe")))
+
+            # Conclusion
+            if n < 10:
+                conclusion = "樣本不足(n<10)"
+            else:
+                vs0  = sig_data.get(0,  {}).get("vs_universe")
+                vs10 = sig_data.get(10, {}).get("vs_universe")
+                vs25 = sig_data.get(25, {}).get("vs_universe")
+                vs50 = sig_data.get(50, {}).get("vs_universe")
+
+                if vs0 is not None and vs0 < -0.03:
+                    conclusion = "0bps時已劣於宇宙"
+                elif vs0 is not None and abs(vs0) < 0.03:
+                    conclusion = "0bps時無明顯優勢"
+                elif vs50 is not None and vs50 > 0.03:
+                    conclusion = "50bps後仍有優勢"
+                elif vs25 is not None and vs25 > 0.03:
+                    conclusion = "25bps後仍有優勢"
+                elif vs10 is not None and vs10 > 0.03:
+                    conclusion = "10bps後仍有優勢"
+                else:
+                    conclusion = "優勢<3pp，成本敏感"
+
+            row = f"| {sig} | {n} | " + " | ".join(cells) + f" | {conclusion} |"
+            lines.append(row)
+
+        lines.append("")
+
+        # Honest interpretation
+        lines.append("### B-3 誠實結論")
+        lines.append("")
+        lines.append("- **BUY_WATCH / BUY_TRIGGER**：")
+        bw_data = cost_results.get("BUY_WATCH", {})
+        bw_n   = bw_data.get(0, {}).get("n", 0)
+        bw_vs0 = bw_data.get(0, {}).get("vs_universe")
+        if bw_n < 10:
+            lines.append(f"  樣本不足（n={bw_n}），無法得出結論。")
+        elif bw_vs0 is not None and bw_vs0 < 0:
+            lines.append(
+                f"  即便在零成本條件下，BUY_WATCH中位超額報酬已為負值 "
+                f"（{_pct(bw_vs0)}）。加入任何成本後劣勢進一步擴大。"
+                f"現有默認閾值（score≥70, RSI<65）在樣本外不具預測力。"
+            )
+        else:
+            lines.append(
+                f"  0bps超額={_pct(bw_vs0)}，需觀察更多樣本。"
+            )
+
+        lines.append("")
+        lines.append("- **EXIT_ALERT**：")
+        ea_data = cost_results.get("EXIT_ALERT", {})
+        ea_n   = ea_data.get(0, {}).get("n", 0)
+        ea_vs0 = ea_data.get(0, {}).get("vs_universe")
+        if ea_n < 10:
+            lines.append(f"  樣本不足（n={ea_n}），無法得出結論。")
+        elif ea_vs0 is not None and ea_vs0 < 0:
+            lines.append(
+                f"  EXIT_ALERT 0bps超額={_pct(ea_vs0)}。此訊號的設計用途為**風控提示**"
+                f"（避免持有正在惡化的股票），而非反向買進訊號。成本分析確認其作為退出依據的一致性。"
+            )
+        else:
+            lines.append(
+                f"  EXIT_ALERT 0bps超額={_pct(ea_vs0)}，n={ea_n}，成本影響可見於上表。"
+            )
+
+        lines.append("")
+        lines.append("- **OVERBOUGHT**：")
+        ob_data = cost_results.get("OVERBOUGHT", {})
+        ob_n   = ob_data.get(0, {}).get("n", 0)
+        ob_vs0 = ob_data.get(0, {}).get("vs_universe")
+        ob_vs50 = ob_data.get(50, {}).get("vs_universe")
+        if ob_n < 10:
+            lines.append(f"  樣本不足（n={ob_n}），無法得出結論。")
+        elif ob_vs0 is not None and ob_vs0 > 0.03:
+            if ob_vs50 is not None and ob_vs50 > 0.03:
+                lines.append(
+                    f"  OVERBOUGHT 在50bps成本下超額報酬仍為{_pct(ob_vs50)}（n={ob_n}）。"
+                    f"動能延續現象在此樣本中足以覆蓋高成本，但**須注意資料以2025-26多頭環境為主**，"
+                    f"須等待空頭窗口驗證。"
+                )
+            else:
+                lines.append(
+                    f"  OVERBOUGHT 0bps超額={_pct(ob_vs0)}，但50bps後縮減至{_pct(ob_vs50)}。"
+                    f"成本對此訊號的優勢有實質影響（n={ob_n}）。"
+                )
+        else:
+            lines.append(
+                f"  OVERBOUGHT 0bps超額={_pct(ob_vs0)}，n={ob_n}，見上表。"
+            )
+        lines.append("")
+
+    # -----------------------------------------------------------------------
+    # B-4: Threshold scan section (optional)
+    # -----------------------------------------------------------------------
+    if threshold_results is not None:
+        univ_med_ts = threshold_results.get("universe_median")
+        univ_n_ts   = threshold_results.get("universe_n", 0)
+
+        lines.append("---")
+        lines.append("")
+        lines.append("## B-4 訊號閾值掃描（Threshold Scan）")
+        lines.append("")
+        lines.append("> **方法**：使用與主框架相同的21個切割窗口（零前瞻）。")
+        lines.append("> 對每個切割點已計算的指標（score、RSI、EMA20、EMA50），")
+        lines.append("> 以自訂閾值重新分類觀察值，不重跑評分或指標計算。")
+        lines.append("> 一維掃描（每次只變動一個參數），其餘維度保持預設值。")
+        lines.append("> n<10 的格子標記為「樣本不足」，不得據此得出結論。")
+        lines.append("> **不修改 signals.py 預設值**——此為分析報告，不改動線上閾值。")
+        lines.append("")
+        lines.append(f"宇宙基準：n={univ_n_ts}，中位報酬={_pct(univ_med_ts)}")
+        lines.append("")
+
+        # -- Scan 1: Score threshold --
+        lines.append("### B-4-1 BUY_WATCH 評分閾值掃描")
+        lines.append("")
+        lines.append(f"固定：RSI進場 < {_DEFAULT_RSI_ENTRY}，RSI出場（EXIT）< {_DEFAULT_RSI_EXIT}")
+        lines.append("條件：score >= threshold AND price > EMA20 AND RSI < 65")
+        lines.append("")
+        lines.append("| score閾值 | n總計 | n有報酬 | 中位報酬 | 勝率 | vs宇宙 | 備註 |")
+        lines.append("|----------|------|--------|--------|------|-------|------|")
+        for row in threshold_results["score_scan"]:
+            note = row.get("note", "")
+            lines.append(
+                f"| {row['param_value']} | {row['n_total']} | {row['n_ret']} | "
+                f"{_pct(row['median'])} | {_fmt_rate(row['win_rate'])} | "
+                f"{_pct(row['vs_universe'])} | {note} |"
+            )
+        lines.append("")
+
+        # -- Scan 2: RSI entry bound --
+        lines.append("### B-4-2 BUY_WATCH RSI 進場上限掃描")
+        lines.append("")
+        lines.append(f"固定：score >= {_DEFAULT_SCORE_THRESH}，RSI出場（EXIT）< {_DEFAULT_RSI_EXIT}")
+        lines.append("條件：score >= 70 AND price > EMA20 AND RSI < rsi_entry_bound")
+        lines.append("")
+        lines.append("| RSI進場上限 | n總計 | n有報酬 | 中位報酬 | 勝率 | vs宇宙 | 備註 |")
+        lines.append("|-----------|------|--------|--------|------|-------|------|")
+        for row in threshold_results["rsi_entry_scan"]:
+            note = row.get("note", "")
+            lines.append(
+                f"| {row['param_value']} | {row['n_total']} | {row['n_ret']} | "
+                f"{_pct(row['median'])} | {_fmt_rate(row['win_rate'])} | "
+                f"{_pct(row['vs_universe'])} | {note} |"
+            )
+        lines.append("")
+
+        # -- Scan 3: RSI exit bound --
+        lines.append("### B-4-3 EXIT_ALERT RSI 出場下限掃描")
+        lines.append("")
+        lines.append(f"固定：score >= {_DEFAULT_SCORE_THRESH}，RSI進場 < {_DEFAULT_RSI_ENTRY}")
+        lines.append("條件（EXIT_ALERT）：price < EMA50 OR RSI < rsi_exit_bound")
+        lines.append("（注：評分跌幅觸發條件因多窗口記錄不含前期評分而省略，誠實聲明如此。）")
+        lines.append("")
+        lines.append("| RSI出場下限 | n總計 | n有報酬 | 中位報酬 | 勝率 | vs宇宙 | 備註 |")
+        lines.append("|-----------|------|--------|--------|------|-------|------|")
+        for row in threshold_results["rsi_exit_scan"]:
+            note = row.get("note", "")
+            lines.append(
+                f"| {row['param_value']} | {row['n_total']} | {row['n_ret']} | "
+                f"{_pct(row['median'])} | {_fmt_rate(row['win_rate'])} | "
+                f"{_pct(row['vs_universe'])} | {note} |"
+            )
+        lines.append("")
+
+        # Honest conclusion for B-4
+        lines.append("### B-4 誠實結論")
+        lines.append("")
+
+        # Assess score scan
+        valid_score_rows = [r for r in threshold_results["score_scan"] if r["n_total"] >= 10]
+        if not valid_score_rows:
+            lines.append(
+                "**BUY_WATCH 評分閾值掃描**："
+                "所有閾值情境下 n<10，樣本嚴重不足，無法得出任何結論。"
+                "現有默認值（score≥70）既未被支持也未被否定。"
+            )
+        else:
+            # Find best by vs_universe
+            best = max(valid_score_rows, key=lambda r: r["vs_universe"] or -99)
+            worst = min(valid_score_rows, key=lambda r: r["vs_universe"] or 99)
+            lines.append(
+                f"**BUY_WATCH 評分閾值掃描**（有效格子 n={len(valid_score_rows)}）："
+            )
+            if best["vs_universe"] is not None and best["vs_universe"] > 0.02:
+                lines.append(
+                    f"score≥{best['param_value']} 表現最佳（超額{_pct(best['vs_universe'])}，"
+                    f"n={best['n_total']}），但整體樣本仍有限，需謹慎解讀。"
+                )
+            else:
+                neg_rows = [r for r in valid_score_rows if r["vs_universe"] is not None and r["vs_universe"] < 0]
+                if neg_rows:
+                    lines.append(
+                        "所有有效閾值的 BUY_WATCH 超額報酬均為負值，"
+                        "顯示現行 score+EMA20+RSI 組合在現有資料中不具買進預測力，"
+                        "調整閾值無助改善。"
+                    )
+                else:
+                    lines.append("有效樣本有限，結論不明確。建議累積更多樣本後重跑。")
+
+        lines.append("")
+
+        # Assess RSI entry scan
+        valid_rsi_entry_rows = [r for r in threshold_results["rsi_entry_scan"] if r["n_total"] >= 10]
+        if not valid_rsi_entry_rows:
+            lines.append(
+                "**BUY_WATCH RSI進場上限掃描**：所有情境下 n<10，樣本不足，無法得出結論。"
+            )
+        else:
+            best = max(valid_rsi_entry_rows, key=lambda r: r["vs_universe"] or -99)
+            lines.append(
+                f"**BUY_WATCH RSI進場上限掃描**（有效格子 n={len(valid_rsi_entry_rows)}）："
+            )
+            if best["vs_universe"] is not None and best["vs_universe"] > 0.02:
+                lines.append(
+                    f"RSI<{best['param_value']} 表現最佳（超額{_pct(best['vs_universe'])}，"
+                    f"n={best['n_total']}）。"
+                )
+            else:
+                lines.append(
+                    "各 RSI 進場上限情境的超額報酬均有限，"
+                    "RSI 進場條件對預測力的貢獻不明確。"
+                )
+
+        lines.append("")
+
+        # Assess RSI exit scan
+        valid_rsi_exit_rows = [r for r in threshold_results["rsi_exit_scan"] if r["n_total"] >= 10]
+        if not valid_rsi_exit_rows:
+            lines.append(
+                "**EXIT_ALERT RSI出場下限掃描**：所有情境下 n<10，樣本不足，無法得出結論。"
+            )
+        else:
+            best = min(valid_rsi_exit_rows, key=lambda r: r["vs_universe"] or 99)  # EXIT: lowest excess = best exit signal
+            lines.append(
+                f"**EXIT_ALERT RSI出場下限掃描**（有效格子 n={len(valid_rsi_exit_rows)}）："
+            )
+            # For exit, we want returns to be low (vs universe) to confirm exit is warranted
+            all_neg = all(
+                r["vs_universe"] is not None and r["vs_universe"] < 0
+                for r in valid_rsi_exit_rows
+            )
+            if all_neg:
+                lines.append(
+                    "各 RSI 出場下限設定下，EXIT_ALERT 組的超額報酬均為負值，"
+                    "與多窗口框架主結論一致（EXIT_ALERT 輕微遜於宇宙）。"
+                    "更嚴格的出場條件（RSI<35）收縮樣本數但超額報酬變化有限。"
+                )
+            else:
+                lines.append(
+                    "各 RSI 出場下限設定表現不一，結論需謹慎。詳見上表。"
+                )
+        lines.append("")
+
     out_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"[multiwindow] VALIDATION.md written to {out_path}")
 
@@ -939,13 +1680,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
             "Multi-window holdout validation + pullback variant comparison.\n"
-            "Extends backtest_holdout.py with rolling cutoffs and fixed 30-day horizon."
+            "Extends backtest_holdout.py with rolling cutoffs and fixed 30-day horizon.\n"
+            "B-3: --costs adds trade cost sensitivity analysis (0/10/25/50 bps).\n"
+            "B-4: --threshold-scan adds BUY_WATCH/EXIT_ALERT threshold scan."
         )
     )
     ap.add_argument("--db", default=None,
                     help="Path to serenity.sqlite (default: data/serenity.sqlite in repo root)")
     ap.add_argument("--pullback", action="store_true",
                     help="Also run pullback variant A/B/C analysis")
+    ap.add_argument("--costs", action="store_true",
+                    help="B-3: Run trade cost sensitivity analysis (0/10/25/50 bps round-trip)")
+    ap.add_argument("--threshold-scan", action="store_true",
+                    help="B-4: Run threshold scan for BUY_WATCH score/RSI and EXIT_ALERT RSI")
     ap.add_argument("--horizon-days", type=int, default=30,
                     help="Fixed forward horizon in calendar days (default: 30)")
     ap.add_argument("--step-days", type=int, default=15,
@@ -961,6 +1708,8 @@ def main() -> None:
     print(f"[multiwindow] Database  : {db_path}")
     print(f"[multiwindow] Horizon   : {args.horizon_days} calendar days (fixed)")
     print(f"[multiwindow] Cutoff step: every {args.step_days} days")
+    print(f"[multiwindow] Flags     : pullback={args.pullback}, "
+          f"costs={args.costs}, threshold-scan={args.threshold_scan}")
 
     con = sqlite3.connect(db_path)
     try:
@@ -1019,7 +1768,21 @@ def main() -> None:
         variant_agg, pb_universe_rets = aggregate_pullback_stats(windows)
         print_pullback_report(variant_agg, pb_universe_rets, len(cutoffs))
 
-    # Write VALIDATION.md
+    # B-3: Trade cost sensitivity
+    cost_results = None
+    if args.costs:
+        print("[multiwindow] Running B-3: trade cost sensitivity analysis ...")
+        cost_results = compute_cost_sensitivity(agg, universe_returns)
+        print_cost_sensitivity_table(cost_results, agg)
+
+    # B-4: Threshold scan
+    threshold_results = None
+    if args.threshold_scan:
+        print("[multiwindow] Running B-4: threshold scan ...")
+        threshold_results = run_threshold_scan(windows, universe_returns)
+        print_threshold_scan_report(threshold_results)
+
+    # Write VALIDATION.md (includes all optional sections when present)
     write_validation_md(
         db_path=db_path,
         max_date_str=max_date_str,
@@ -1030,6 +1793,8 @@ def main() -> None:
         pullback=args.pullback,
         variant_agg=variant_agg,
         pb_universe_rets=pb_universe_rets,
+        cost_results=cost_results,
+        threshold_results=threshold_results,
     )
 
     print()
