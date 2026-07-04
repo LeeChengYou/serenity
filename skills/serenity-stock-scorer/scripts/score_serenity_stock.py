@@ -91,6 +91,14 @@ def score_symbol(db_path: Path, symbol: str, now: datetime | None = None) -> dic
         """,
         (symbol,),
     ).fetchall()
+    # Point-in-time correctness: only consider mentions dated on or before `now`.
+    # In live scoring `now` is the current time, so every past mention is kept;
+    # in a backtest `now` is the as-of date, which excludes look-ahead (future)
+    # mentions and makes the score an honest point-in-time value.
+    rows = [
+        r for r in rows
+        if (parse_dt(r['created_at']) is not None and parse_dt(r['created_at']) <= now)
+    ]
     total_tweets = con.execute('select count(*) from tweets').fetchone()[0]
     total_mentions = con.execute('select count(*) from mentions').fetchone()[0]
     if not rows:

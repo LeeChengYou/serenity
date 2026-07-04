@@ -127,6 +127,7 @@ def _build_conditions(
     score: Optional[float],
     prev_score: Optional[float],
     gain_20d: Optional[float],
+    sentiment: Optional[dict] = None,
 ) -> list:
     """
     Build the full condition checklist that the UI renders.
@@ -260,6 +261,23 @@ def _build_conditions(
     else:
         conds.append(_cond("20-day gain > 30%", False, "insufficient price history"))
 
+    # --- StockTwits crowd sentiment ---
+    if sentiment and sentiment.get("ratio") is not None and sentiment.get("total", 0) >= 5:
+        ratio = sentiment["ratio"]
+        total = sentiment["total"]
+        conds.append(_cond(
+            "StockTwits sentiment bullish (>55%)",
+            ratio >= 0.55,
+            f"{ratio * 100:.0f}% bullish of {total} tagged messages"
+            + (" — crowd bearish" if ratio < 0.30 else ""),
+        ))
+    else:
+        conds.append(_cond(
+            "StockTwits sentiment bullish (>55%)",
+            False,
+            "insufficient tagged sentiment",
+        ))
+
     return conds
 
 
@@ -277,6 +295,7 @@ def _determine_signal(
     score: Optional[float],
     prev_score: Optional[float],
     gain_20d: Optional[float],
+    sentiment: Optional[dict] = None,
 ) -> str:
     """Return the highest-priority matching signal string."""
 
@@ -291,6 +310,11 @@ def _determine_signal(
     if rsi is not None and rsi < 40:
         exit_triggered = True
     if score is not None and prev_score is not None and (prev_score - score) > 15:
+        exit_triggered = True
+    # Strongly bearish crowd sentiment (needs a meaningful sample) is a
+    # risk-management confirmation on the exit side.
+    if (sentiment and sentiment.get("ratio") is not None
+            and sentiment.get("total", 0) >= 10 and sentiment["ratio"] < 0.30):
         exit_triggered = True
     if exit_triggered:
         return "EXIT_ALERT"
@@ -330,6 +354,7 @@ def evaluate_signal(
     bars: list,
     prev_score: Optional[float] = None,
     rr_ratio: float = 2.0,
+    sentiment: Optional[dict] = None,
 ) -> dict:
     """
     Compute a deterministic rule-based signal for a single symbol.
@@ -378,7 +403,7 @@ def evaluate_signal(
         conditions = _build_conditions(
             latest_close, ema20, ema50, rsi,
             macd_hist_latest, macd_hist_prev,
-            volume_ratio, score, prev_score, gain_20d,
+            volume_ratio, score, prev_score, gain_20d, sentiment,
         )
         return {
             "signal": "NEUTRAL",
@@ -390,19 +415,20 @@ def evaluate_signal(
             "rr_ratio": None,
             "atr14": atr14,
             "score": score,
+            "sentiment": sentiment,
             "insufficient_data": True,
         }
 
     signal = _determine_signal(
         latest_close, ema20, ema50, rsi,
         macd_hist_latest, volume_ratio,
-        score, prev_score, gain_20d,
+        score, prev_score, gain_20d, sentiment,
     )
 
     conditions = _build_conditions(
         latest_close, ema20, ema50, rsi,
         macd_hist_latest, macd_hist_prev,
-        volume_ratio, score, prev_score, gain_20d,
+        volume_ratio, score, prev_score, gain_20d, sentiment,
     )
 
     # Position sizing — use EMA20 as reference entry level
@@ -427,5 +453,6 @@ def evaluate_signal(
         "rr_ratio": sizing["rr_ratio"],
         "atr14": round(atr14, 4) if atr14 is not None else None,
         "score": score,
+        "sentiment": sentiment,
         "insufficient_data": False,
     }

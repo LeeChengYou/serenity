@@ -20,9 +20,50 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sqlite3
 import statistics
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Quantitative X-corpus scorer (point-in-time capable) — imported from the
+# serenity-stock-scorer skill so we share a single scoring implementation.
+# ---------------------------------------------------------------------------
+
+def _load_quant_scorer():
+    """Import score_symbol from the serenity-stock-scorer skill by path."""
+    scorer_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills" / "serenity-stock-scorer" / "scripts" / "score_serenity_stock.py"
+    )
+    spec = importlib.util.spec_from_file_location("score_serenity_stock", scorer_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.score_symbol
+
+
+_score_symbol = _load_quant_scorer()
+
+
+def quant_score_asof(db_path: Path, symbol: str, mention_date: str) -> float | None:
+    """
+    Compute the quantitative X-corpus score for `symbol` using only mentions
+    dated on or before `mention_date` (YYYY-MM-DD).  Returns None on failure.
+
+    The as-of time is the end of the mention day so same-day mentions are
+    included while future mentions are excluded (no look-ahead bias).
+    """
+    try:
+        as_of = datetime.fromisoformat(mention_date + "T23:59:59+00:00")
+    except ValueError:
+        return None
+    try:
+        result = _score_symbol(db_path, symbol, now=as_of)
+        return result.get("score")
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +240,6 @@ def run_backtest(db_path: Path) -> dict:
     try:
         prices = _load_prices(con)
         mentions = _load_mentions(con)
-        scores = _load_scores(con)
     finally:
         con.close()
 
@@ -228,7 +268,9 @@ def run_backtest(db_path: Path) -> dict:
         total_samples += 1
         symbols_seen.add(sym)
 
-        score = scores.get(sym)
+        # Point-in-time quantitative score: uses only mentions up to the
+        # mention day, so the bucket reflects what was knowable at entry.
+        score = quant_score_asof(db_path, sym, mention_date)
         bucket = _bucket_for(score) or "unknown"
 
         for h in HORIZONS:

@@ -41,6 +41,22 @@ except ImportError:
     _spec2.loader.exec_module(_mod2)
     _evaluate_signal = _mod2.evaluate_signal
 
+# Quantitative X-corpus scorer (from the serenity-stock-scorer skill).  Used as
+# a fallback score for symbols that have no AI-generated bottleneck scorecard,
+# so every symbol with mentions still gets a signal score.
+try:
+    import importlib.util as _ilu3
+    _spec3 = _ilu3.spec_from_file_location(
+        "score_serenity_stock",
+        Path(__file__).resolve().parents[1]
+        / "skills" / "serenity-stock-scorer" / "scripts" / "score_serenity_stock.py",
+    )
+    _mod3 = _ilu3.module_from_spec(_spec3)
+    _spec3.loader.exec_module(_mod3)
+    _quant_score = _mod3.score_symbol
+except Exception:
+    _quant_score = None
+
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "serenity.sqlite"
 STATIC_DIR = ROOT / "dashboard"
@@ -901,11 +917,23 @@ def signal_payload(con, symbol: str) -> dict:
     # Fetch current and previous scorecard scores (real, not synthesised)
     score = None
     prev_score = None
+    score_source = None
     sc_row = con.execute(
         "select final_score from scorecards where symbol=?", (symbol,)
     ).fetchone()
-    if sc_row:
+    if sc_row and sc_row[0] is not None:
         score = sc_row[0]
+        score_source = "scorecard"
+    elif _quant_score is not None:
+        # Fallback: quantitative X-corpus score so symbols without an AI
+        # scorecard still get a signal score.  Computed from real mentions.
+        try:
+            q = _quant_score(DB_PATH, symbol)
+            if q and q.get("score") is not None:
+                score = q["score"]
+                score_source = "quant"
+        except Exception:
+            pass
 
     # Previous score = the most recently archived scorecard.  The current
     # score lives in `scorecards`; every prior version is appended to
@@ -919,6 +947,24 @@ def signal_payload(con, symbol: str) -> dict:
     if hist_row:
         prev_score = hist_row[0]
 
+    # Real StockTwits crowd sentiment from news_sentiment (recent tagged msgs)
+    sentiment = None
+    sent_rows = con.execute(
+        "select sentiment from news_sentiment where symbol=? "
+        "order by published_at desc limit 100",
+        (symbol,),
+    ).fetchall()
+    if sent_rows:
+        bull = sum(1 for (s,) in sent_rows if s == "Bullish")
+        bear = sum(1 for (s,) in sent_rows if s == "Bearish")
+        tagged = bull + bear
+        sentiment = {
+            "bull": bull,
+            "bear": bear,
+            "total": tagged,
+            "ratio": (bull / tagged) if tagged else None,
+        }
+
     result = _evaluate_signal(
         latest_close=latest_close,
         indicators=indicators,
@@ -926,8 +972,10 @@ def signal_payload(con, symbol: str) -> dict:
         bars=bars,
         prev_score=prev_score,
         rr_ratio=2.0,
+        sentiment=sentiment,
     )
     result["symbol"] = symbol
+    result["score_source"] = score_source
     return result
 
 
