@@ -70,15 +70,72 @@ def connect():
         create table if not exists prices (
             symbol text not null,
             date text not null,
+            open real,
+            high real,
+            low real,
             close real not null,
             volume integer,
             primary key(symbol, date)
         );
+        create table if not exists news_sentiment (
+            id              integer primary key autoincrement,
+            symbol          text not null,
+            source          text not null,
+            published_at    text not null,
+            headline        text,
+            sentiment       text,
+            sentiment_score real,
+            url             text,
+            content_snippet text
+        );
         create index if not exists idx_mentions_symbol_time on mentions(symbol, mentioned_at);
         create index if not exists idx_prices_symbol_date on prices(symbol, date);
+        create index if not exists idx_news_sentiment_symbol on news_sentiment(symbol, published_at);
         """
     )
+    migrate_prices_ohlc(con)
+    migrate_news_sentiment(con)
     return con
+
+
+def migrate_prices_ohlc(con):
+    """
+    Idempotent migration: add open/high/low columns to an existing prices
+    table that was created before OHLC support.  Safe to call on a fresh DB
+    (columns already present) or on a legacy DB (columns missing).
+    """
+    existing = {row[1] for row in con.execute("PRAGMA table_info(prices)")}
+    for col in ("open", "high", "low"):
+        if col not in existing:
+            con.execute(f"ALTER TABLE prices ADD COLUMN {col} REAL")
+            print(f"[migrate] Added column prices.{col}")
+    con.commit()
+
+
+def migrate_news_sentiment(con):
+    """
+    Idempotent migration: ensure the news_sentiment table exists.
+    The CREATE TABLE in connect() already handles fresh DBs; this covers
+    any edge-case where the table was created without the index.
+    """
+    con.execute("""
+        create table if not exists news_sentiment (
+            id              integer primary key autoincrement,
+            symbol          text not null,
+            source          text not null,
+            published_at    text not null,
+            headline        text,
+            sentiment       text,
+            sentiment_score real,
+            url             text,
+            content_snippet text
+        )
+    """)
+    con.execute("""
+        create index if not exists idx_news_sentiment_symbol
+            on news_sentiment(symbol, published_at)
+    """)
+    con.commit()
 
 
 def parse_curl(path: Path):
@@ -310,7 +367,7 @@ def fetch_prices(days_back=420, min_mentions=2):
                 row = con.execute("select max(date) from prices where symbol=?", (symbol,)).fetchone()
                 latest_date_str = row[0] if row else None
                 
-                # Determine start date
+                # Determine start date (incremental — preserve WIP behaviour)
                 if latest_date_str:
                     latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
                     days_diff = (today - latest_dt).days
@@ -322,7 +379,7 @@ def fetch_prices(days_back=420, min_mentions=2):
                 else:
                     fetch_start = today - dt.timedelta(days=days_back)
                     print(f"price {symbol} - full fetch from {fetch_start.date()}")
-                    
+
                 data = yahoo_chart(symbol, fetch_start, today + dt.timedelta(days=2))
                 result = (data.get("chart") or {}).get("result") or []
                 if not result:
@@ -331,16 +388,37 @@ def fetch_prices(days_back=420, min_mentions=2):
                 res = result[0]
                 timestamps = res.get("timestamp") or []
                 quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
-                closes = quote.get("close") or []
+                opens   = quote.get("open")   or []
+                highs   = quote.get("high")   or []
+                lows    = quote.get("low")    or []
+                closes  = quote.get("close")  or []
                 volumes = quote.get("volume") or []
+
+                def _guard(val):
+                    """Return float if finite and within a sane price range, else None."""
+                    if val is None:
+                        return None
+                    try:
+                        f = float(val)
+                        if not math.isfinite(f) or f < 0 or f > 100000:
+                            return None
+                        return f
+                    except (TypeError, ValueError):
+                        return None
+
                 inserted = 0
-                for ts, close, vol in zip(timestamps, closes, volumes):
-                    if close is None or math.isnan(float(close)) or float(close) <= 0 or float(close) > 100000:
-                        continue
+                for ts, open_v, high_v, low_v, close_v, vol in zip(timestamps, opens, highs, lows, closes, volumes):
+                    close_f = _guard(close_v)
+                    if close_f is None or close_f <= 0:
+                        continue  # skip bars with bad close — never fabricate
+                    open_f = _guard(open_v)
+                    high_f = _guard(high_v)
+                    low_f = _guard(low_v)
                     date = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat()
                     con.execute(
-                        "insert or replace into prices(symbol, date, close, volume) values (?, ?, ?, ?)",
-                        (symbol, date, float(close), int(vol or 0) if vol is not None else None),
+                        """insert or replace into prices(symbol, date, open, high, low, close, volume)
+                           values (?, ?, ?, ?, ?, ?, ?)""",
+                        (symbol, date, open_f, high_f, low_f, close_f, int(vol or 0) if vol is not None else None),
                     )
                     inserted += 1
                 con.commit()
@@ -352,23 +430,145 @@ def fetch_prices(days_back=420, min_mentions=2):
         con.close()
 
 
+def fetch_stocktwits(symbol: str, con=None, limit: int = 30) -> int:
+    """
+    Fetch up to `limit` recent messages for `symbol` from the public
+    StockTwits stream API and store them in the `news_sentiment` table.
+
+    Returns the number of new rows inserted.  Skips messages that are
+    missing a timestamp or body.  Skips rows already present (insert or
+    ignore on unique constraint).
+
+    No authentication is required for the public stream endpoint:
+      GET https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json
+
+    Sentiment values reported by StockTwits are 'Bullish' or 'Bearish';
+    messages with no sentiment are stored as 'Neutral'.
+
+    Rate limits: the endpoint allows roughly 200 requests/hour
+    unauthenticated.  Callers should add a pause between symbols when
+    processing a batch.  On HTTP 429 or any network error this function
+    logs the error and returns 0 — it never fabricates data.
+    """
+    own_connection = con is None
+    if own_connection:
+        con = connect()
+
+    url = f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        print(f"  stocktwits {symbol}: HTTP {exc.code} — skipping", file=sys.stderr)
+        return 0
+    except Exception as exc:
+        print(f"  stocktwits {symbol}: {exc} — skipping", file=sys.stderr)
+        return 0
+
+    try:
+        data = json.loads(body)
+    except Exception as exc:
+        print(f"  stocktwits {symbol}: JSON parse error {exc}", file=sys.stderr)
+        return 0
+
+    messages = (data.get("messages") or [])[:limit]
+    inserted = 0
+    for msg in messages:
+        msg_id = msg.get("id")
+        created_at = msg.get("created_at")
+        body_text = (msg.get("body") or "").strip()
+        if not created_at or not body_text:
+            continue  # skip malformed messages — never fake
+
+        # Normalise timestamp to ISO-8601 UTC
+        try:
+            ts = dt.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+            ts = ts.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            ts = created_at  # keep as-is if format unexpected
+
+        # Parse sentiment field (may be absent)
+        entities = msg.get("entities") or {}
+        sentiment_obj = entities.get("sentiment") or {}
+        sentiment_basic = (sentiment_obj.get("basic") or "").strip() or "Neutral"
+
+        msg_url = f"https://stocktwits.com/message/{msg_id}" if msg_id else None
+
+        try:
+            con.execute(
+                """insert or ignore into news_sentiment
+                   (symbol, source, published_at, headline, sentiment,
+                    sentiment_score, url, content_snippet)
+                   values (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    symbol.upper(),
+                    "stocktwits",
+                    ts,
+                    body_text[:500],
+                    sentiment_basic,
+                    None,  # StockTwits public API does not expose numeric scores
+                    msg_url,
+                    None,
+                ),
+            )
+            inserted += con.execute("select changes()").fetchone()[0]
+        except sqlite3.Error as exc:
+            print(f"  stocktwits insert error ({symbol} msg {msg_id}): {exc}", file=sys.stderr)
+
+    if own_connection:
+        con.commit()
+    else:
+        con.commit()
+
+    print(f"  stocktwits {symbol}: {inserted} new rows (of {len(messages)} fetched)")
+    return inserted
+
+
+def fetch_stocktwits_all(min_mentions: int = 2, pause: float = 1.0) -> None:
+    """
+    Fetch StockTwits data for every tracked symbol (ordered by mention count).
+    Pauses `pause` seconds between requests to stay within rate limits.
+    """
+    con = connect()
+    symbols = symbol_list(con, min_mentions)
+    if not symbols:
+        print("no symbols yet; run fetch-x first")
+        return
+    total = 0
+    for symbol in symbols:
+        total += fetch_stocktwits(symbol, con=con)
+        time.sleep(pause)
+    print(f"stocktwits: {total} total new rows for {len(symbols)} symbols")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Ingest Serenity X posts, symbols and Yahoo prices into SQLite.")
-    ap.add_argument("command", choices=["fetch-x", "prices", "all", "stats"])
+    ap.add_argument("command", choices=["fetch-x", "prices", "all", "stats", "stocktwits"])
     ap.add_argument("--max-pages", type=int, default=20)
     ap.add_argument("--days", type=int, default=420)
     ap.add_argument("--min-mentions", type=int, default=2)
+    ap.add_argument("--symbol", help="Single symbol for stocktwits subcommand")
+    ap.add_argument("--pause", type=float, default=1.0, help="Seconds between StockTwits requests")
     args = ap.parse_args()
     if args.command in {"fetch-x", "all"}:
         fetch_x(args.max_pages)
     if args.command in {"prices", "all"}:
         fetch_prices(args.days, args.min_mentions)
+    if args.command in {"stocktwits", "all"}:
+        if args.symbol:
+            con = connect()
+            fetch_stocktwits(args.symbol.upper(), con=con)
+            con.commit()
+        else:
+            fetch_stocktwits_all(args.min_mentions, args.pause)
     if args.command == "stats":
         con = connect()
         try:
             print("tweets", con.execute("select count(*) from tweets").fetchone()[0])
             print("mentions", con.execute("select count(*) from mentions").fetchone()[0])
             print("prices", con.execute("select count(*) from prices").fetchone()[0])
+            print("news_sentiment", con.execute("select count(*) from news_sentiment").fetchone()[0])
             for row in con.execute("select symbol, count(*) c, min(mentioned_at), max(mentioned_at) from mentions group by symbol order by c desc, symbol"):
                 print(dict(row))
         finally:

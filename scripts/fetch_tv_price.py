@@ -33,8 +33,27 @@ def fetch_ohlc(exchange: str, tv_symbol: str, timeframe: str, candles: int):
     return []
 
 
-def save_prices(rows, db_symbol: str):
+def _guard_float(val):
+    """Return float if val is finite and within a sane price range, else None."""
     import math
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and 0 <= f <= 100000 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def save_prices(rows, db_symbol: str):
+    """
+    Persist TradingView OHLCV rows into the prices table.
+
+    The TradingView scraper already provides full OHLCV data; this function
+    stores open/high/low in addition to close/volume so that technical
+    indicators can be computed.  Applies the same None/NaN/negative guards
+    used in ingest.py::fetch_prices().
+    """
     con = sqlite3.connect(DB_PATH)
     con.execute("pragma journal_mode=wal")
     try:
@@ -42,22 +61,41 @@ def save_prices(rows, db_symbol: str):
             create table if not exists prices (
                 symbol text not null,
                 date text not null,
+                open real,
+                high real,
+                low real,
                 close real not null,
                 volume integer,
                 unique(symbol, date)
             );
         """)
+        # Idempotent migration: add OHLC columns if this DB predates OHLC support.
+        existing = {r[1] for r in con.execute("PRAGMA table_info(prices)")}
+        for col in ("open", "high", "low"):
+            if col not in existing:
+                con.execute(f"ALTER TABLE prices ADD COLUMN {col} REAL")
+        con.commit()
+
         inserted = 0
         for row in rows:
-            if "timestamp" not in row or "close" not in row or row["close"] is None:
+            if "timestamp" not in row:
                 continue
-            close_val = float(row["close"])
-            if math.isnan(close_val) or close_val <= 0 or close_val > 100000:
-                continue
+            close_f = _guard_float(row.get("close"))
+            if close_f is None or close_f <= 0:
+                continue  # skip bars without a valid close — never fabricate
             date = dt.datetime.fromtimestamp(row["timestamp"], dt.timezone.utc).date().isoformat()
             con.execute(
-                "insert or replace into prices(symbol, date, close, volume) values (?, ?, ?, ?)",
-                (db_symbol.upper(), date, close_val, int(row.get("volume") or 0) if row.get("volume") is not None else None),
+                """insert or replace into prices(symbol, date, open, high, low, close, volume)
+                   values (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    db_symbol.upper(),
+                    date,
+                    _guard_float(row.get("open")),
+                    _guard_float(row.get("high")),
+                    _guard_float(row.get("low")),
+                    close_f,
+                    int(row.get("volume") or 0) if row.get("volume") is not None else None,
+                ),
             )
             inserted += 1
         con.commit()

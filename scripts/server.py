@@ -14,6 +14,20 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+# Technical indicators (stdlib only, no pandas/numpy)
+try:
+    from indicators import compute_all as _compute_indicators
+except ImportError:
+    # If server is run from a different cwd, try the scripts/ folder path
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "indicators",
+        Path(__file__).resolve().parent / "indicators.py",
+    )
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _compute_indicators = _mod.compute_all
+
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "serenity.sqlite"
 STATIC_DIR = ROOT / "dashboard"
@@ -719,9 +733,21 @@ def summary(con):
 
 
 def symbol_payload(con, symbol):
-    prices = [dict(r) for r in con.execute(
-        "select date, close, volume from prices where symbol=? order by date", (symbol,)
+    # Fetch full OHLCV — older columns (open/high/low) may be NULL for legacy rows
+    bars = [dict(r) for r in con.execute(
+        "select date, open, high, low, close, volume from prices where symbol=? order by date",
+        (symbol,),
     )]
+
+    # Build the legacy `prices` list (date, close, volume) for backward compat
+    prices = [{"date": b["date"], "close": b["close"], "volume": b["volume"]} for b in bars]
+
+    # Compute technical indicators.  Returns null fields when data is insufficient.
+    try:
+        indicators = _compute_indicators(bars)
+    except Exception as exc:
+        indicators = {"error": str(exc)}
+
     mentions = [dict(r) for r in con.execute(
         """select m.symbol, m.mentioned_at, m.text, t.url, t.favorite_count, t.reply_count, t.retweet_count, t.source
                from mentions m join tweets t on t.tweet_id=m.tweet_id
@@ -732,7 +758,14 @@ def symbol_payload(con, symbol):
                from mentions m1 join mentions m2 on m1.tweet_id=m2.tweet_id and m1.symbol<>m2.symbol
                where m1.symbol=? group by m2.symbol order by count desc, m2.symbol limit 20""", (symbol,)
     )]
-    return {"symbol": symbol, "prices": prices, "mentions": mentions, "neighbors": neighbors}
+    return {
+        "symbol": symbol,
+        "prices": prices,
+        "bars": bars,
+        "indicators": indicators,
+        "mentions": mentions,
+        "neighbors": neighbors,
+    }
 
 
 def run_background_ingest():
