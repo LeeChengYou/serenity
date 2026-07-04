@@ -67,10 +67,10 @@ input { width: 170px; border: 1px solid var(--line); border-radius: 999px; paddi
 .model-select { border: 1px solid var(--line); background: rgba(255, 255, 255, 0.4); color: var(--ink); padding: 5px 10px; border-radius: 999px; font-family: inherit; font-size: 12px; outline: none; cursor: pointer; }
 .model-select:hover { background: rgba(255, 255, 255, 0.65); }
 .badge { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; font-size: 12px; }
-.chart-wrap { flex: 1; min-height: 0; height: auto; padding: 12px 16px 6px; }
+.chart-wrap { flex: 1 0 180px; min-height: 0; height: auto; padding: 12px 16px 6px; }
 .meta-strip { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .meta-strip span, .neighbors span { border: 1px solid var(--line); border-radius: 999px; padding: 7px 10px; background: rgba(255,255,255,.35); font-size: 13px; }
-.neighbors { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 14px; }
+.neighbors { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 14px; flex-shrink: 0; }
 .feed-panel { margin-top: 18px; }
 .feed { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; }
 .feed-item { padding: 18px 20px; border-top: 1px solid var(--line); min-height: 128px; }
@@ -81,5 +81,168 @@ a { color: var(--blue); text-decoration: none; }
 .delay-1 { animation-delay: .08s; } .delay-2 { animation-delay: .16s; } .delay-3 { animation-delay: .24s; }
 @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 @keyframes beat { 50% { transform: scale(1.35); } }
+
+/* ── Task C: Copy link button ───────────────────────────────────────────── */
+.copy-link-btn {
+  font-size: 11px; font-family: ui-monospace, SFMono-Regular, monospace;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.copy-link-btn:hover { color: var(--ink); border-color: var(--ink); }
+
+/* ── Task A: RSI sub-chart ──────────────────────────────────────────────── */
+.rsi-wrap {
+  height: 84px;
+  flex-shrink: 0;
+  padding: 2px 16px 4px;
+  border-top: 1px solid var(--line);
+  position: relative;
+}
+.rsi-label {
+  position: absolute;
+  top: 4px; left: 20px;
+  font-size: 9px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--muted);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* ── Task B: Signal panel ───────────────────────────────────────────────── */
+.signal-panel {
+  padding: 7px 16px 8px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,0.12);
+  flex-shrink: 0;
+  font-size: 11.5px;
+}
+.signal-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  flex-wrap: wrap;
+}
+.sig-badge {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.sig-buy-watch  { background: rgba(31,122,79,.14); color: #1a6640; border: 1px solid rgba(31,122,79,.3); }
+.sig-buy-trigger{ background: rgba(141,184,0,.22); color: #4a7000; border: 1px solid rgba(141,184,0,.5); }
+.sig-hold       { background: rgba(31,77,122,.13); color: #1f4d7a; border: 1px solid rgba(31,77,122,.3); }
+.sig-exit       { background: rgba(255,107,53,.14); color: #b84000; border: 1px solid rgba(255,107,53,.35); }
+.sig-overbought { background: rgba(255,107,53,.10); color: #b84000; border: 1px solid rgba(255,107,53,.25); }
+.sig-neutral    { background: rgba(107,110,98,.10); color: var(--muted); border: 1px solid var(--line); }
+.signal-pill {
+  font-size: 10px;
+  background: rgba(0,0,0,0.06);
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.signal-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+.signal-cond {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+.cond-met   { background: rgba(31,122,79,.08); border-color: rgba(31,122,79,.2); color: #1a6640; }
+.cond-unmet { background: rgba(255,107,53,.08); border-color: rgba(255,107,53,.2); color: #b84000; }
+.signal-cond em { font-style: normal; opacity: 0.7; margin-left: 3px; }
+.signal-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.sig-level { font-size: 10.5px; }
+.sig-level span { color: var(--muted); margin-right: 3px; }
+.sig-level b { font-family: ui-monospace, SFMono-Regular, monospace; }
+.signal-insufficient { margin: 0; color: var(--muted); font-style: italic; font-size: 11px; }
+
+/* ── Task D: Mobile bottom navigation ──────────────────────────────────── */
+.mobile-bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 52px;
+  background: var(--ink);
+  border-top: 2px solid rgba(195,247,58,.25);
+  z-index: 999;
+  grid-template-columns: repeat(4, 1fr);
+}
+.mobile-bottom-nav button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-right: 1px solid rgba(255,255,255,.07);
+  color: rgba(242,234,215,.5);
+  font-size: 9.5px;
+  gap: 2px;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 4px 2px;
+  line-height: 1;
+  transition: color .15s;
+}
+.mobile-bottom-nav button:last-child { border-right: none; }
+.mobile-bottom-nav button.active { color: var(--acid); }
+.mobile-nav-icon { font-size: 17px; display: block; }
+
 @media (max-width: 1200px) { .workbench { grid-template-columns: 1fr; } .symbols-panel, .chart-panel, .chat-panel { height: auto; } }
 @media (max-width: 980px) { .hero, .workbench, .kpis, .feed { grid-template-columns: 1fr; } .hero-card { transform: none; } .symbols-panel, .chart-panel, .chat-panel { height: auto; } .symbols { flex: none; height: 360px; } .feed-item:nth-child(odd) { border-right: 0; } .chart-wrap { flex: none; height: 420px; } }
+
+/* ── Mobile single-panel layout (<= 768px) ──────────────────────────────── */
+@media (max-width: 768px) {
+  .mobile-bottom-nav { display: grid; }
+  body { padding-bottom: 56px; }
+  .shell { padding-bottom: 0; }
+  .workbench { grid-template-columns: 1fr; gap: 0; margin-bottom: 0; }
+
+  /* All three panels hidden by default; JS adds .mobile-visible to show one */
+  .symbols-panel, .chart-panel, .chat-panel {
+    display: none;
+    height: 75vh;
+    min-height: 380px;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  .symbols-panel.mobile-visible,
+  .chart-panel.mobile-visible,
+  .chat-panel.mobile-visible { display: flex; }
+
+  /* Chat: keep input pinned at bottom */
+  .chat-panel { flex-direction: column; }
+  .chat-messages { flex: 1; }
+
+  /* Prevent iOS input zoom (needs font-size >= 16px) */
+  .chat-input-wrap input, #symbolSearch { font-size: 16px; }
+
+  /* Hide feed on mobile to reduce clutter */
+  .feed-panel { display: none; }
+
+  /* KPIs: 3 columns on small screens */
+  .kpis { grid-template-columns: repeat(3, 1fr); }
+
+  /* Chart height for mobile */
+  .chart-wrap { flex: none; height: 220px; }
+  .rsi-wrap { height: 72px; }
+}

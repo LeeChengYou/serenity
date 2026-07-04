@@ -28,6 +28,7 @@
     <section class="kpis reveal delay-1" id="kpis"></section>
 
     <section class="workbench reveal delay-2">
+      <!-- ── Stock list panel ── -->
       <aside class="panel symbols-panel">
         <div class="panel-head">
           <h2>Symbols</h2>
@@ -41,24 +42,40 @@
         <div id="symbols" class="symbols"></div>
       </aside>
 
+      <!-- ── Chart + signal panel ── -->
       <section class="panel chart-panel">
         <div class="chart-head">
           <div>
             <p class="eyebrow">price x mention timeline</p>
             <h2 id="activeTitle">選擇一個 Symbol</h2>
           </div>
-          <div class="meta-strip" id="activeMeta"></div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+            <div class="meta-strip" id="activeMeta"></div>
+            <!-- Task C: copy link button -->
+            <button id="copyLinkBtn" onclick="copyLink()" title="Copy shareable link" class="copy-link-btn">⎘ Copy Link</button>
+          </div>
         </div>
+
         <div class="tabs" style="padding: 0 16px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 8px;">
           <button class="active" id="tabChartBtn" onclick="switchDetailTab('chart')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">📈 價格走勢圖</button>
           <button id="tabScorecardBtn" onclick="switchDetailTab('scorecard')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">🎯 供應鏈瓶頸分析</button>
         </div>
-        
-        <div id="chartView" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+
+        <!-- Task B: Signal panel (populated by renderSignalPanel) -->
+        <div id="signalPanel" class="signal-panel" style="display: none;"></div>
+
+        <!-- Chart view -->
+        <div id="chartView" style="flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto;">
           <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
+          <!-- Task A: RSI sub-chart -->
+          <div id="rsiWrap" class="rsi-wrap" style="display: none;">
+            <div class="rsi-label">RSI (14)</div>
+            <canvas id="rsiChart"></canvas>
+          </div>
           <div id="neighbors" class="neighbors"></div>
         </div>
 
+        <!-- Scorecard view -->
         <div id="scorecardView" style="display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 16px;">
           <!-- Placeholder if no data -->
           <div id="scorecardPlaceholder" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; color: var(--muted); padding: 20px;">
@@ -87,6 +104,7 @@
         </div>
       </section>
 
+      <!-- ── AI Chat panel ── -->
       <section class="panel chat-panel">
         <div class="panel-head">
           <div>
@@ -97,7 +115,7 @@
         <div id="chatMessages" class="chat-messages">
           <div class="msg system">
             <b>Serenity 投研夥伴：</b>歡迎來到 Serenity 投研對話空間。我是您的 AI 助理，已載入 <code>serenity-skill</code> 瓶頸獵人架構，能幫您分析個別股票的物理供應鏈瓶頸或進行產業掃描。請輸入您的問題，例如：
-            <br>💡 <a href="#" onclick="clickSampleQuestion('分析 NVDA 的瓶頸與風險')">「分析 NVDA 的瓶頸與風險」</a> 
+            <br>💡 <a href="#" onclick="clickSampleQuestion('分析 NVDA 的瓶頸與風險')">「分析 NVDA 的瓶頸與風險」</a>
             或 <a href="#" onclick="clickSampleQuestion('用 Serenity 的方式看 TSM')">「用 Serenity 的方式看 TSM」</a>。
           </div>
         </div>
@@ -133,6 +151,26 @@
       <div id="feed" class="feed"></div>
     </section>
   </main>
+
+  <!-- Task D: Mobile bottom navigation bar -->
+  <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
+    <button data-panel="list" onclick="setMobilePanel('list')" class="active">
+      <span class="mobile-nav-icon">☰</span>
+      <span>清單</span>
+    </button>
+    <button data-panel="chart" onclick="setMobilePanel('chart')">
+      <span class="mobile-nav-icon">📈</span>
+      <span>圖表</span>
+    </button>
+    <button data-panel="score" onclick="setMobilePanel('score')">
+      <span class="mobile-nav-icon">🎯</span>
+      <span>評分</span>
+    </button>
+    <button data-panel="chat" onclick="setMobilePanel('chat')">
+      <span class="mobile-nav-icon">💬</span>
+      <span>聊天</span>
+    </button>
+  </nav>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <script src="/app.js"></script>
