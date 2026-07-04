@@ -1025,13 +1025,15 @@ def signal_payload(con, symbol: str) -> dict:
 
 
 _RELIABILITY_NOTE = (
-    "Out-of-sample validation (30-day temporal holdout, cutoff 2026-06-02, "
-    "76 symbols) found BUY-side signals UNDERPERFORMED the universe median "
-    "(-20.3% vs -15.7%) and the quant score was anti-predictive across three "
-    "windows; EXIT_ALERT outperformed (+13pp) but with only n=5. Treat BUY "
-    "recommendations with extreme caution; exit/risk signals carry more "
-    "evidential support. Reproduce with scripts/backtest_holdout.py. This is "
-    "not investment advice."
+    "Multi-window out-of-sample validation (21 cutoffs, fixed 30-day horizon, "
+    "1541 observations) found: BUY_WATCH UNDERPERFORMS the universe (-4.8pp, "
+    "n=35); chasing extended high-heat stocks is a confirmed drag (-5.2pp, "
+    "n=30); EXIT_ALERT shows NO edge at scale (-0.9pp, n=488 — the earlier "
+    "+13pp result was period noise); a pullback-entry variant looks promising "
+    "(+71% win rate) but n=7 is insufficient to conclude. Observations overlap "
+    "across windows, so effective sample sizes are smaller than stated. See "
+    "docs/VALIDATION.md; reproduce with scripts/backtest_multiwindow.py. This "
+    "is not investment advice."
 )
 
 
