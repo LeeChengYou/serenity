@@ -1348,8 +1348,11 @@ def snapshot_signals():
         for sym in symbols:
             try:
                 sp = signal_payload(con, sym)
-                rsi_val = None
-                if sp.get("conditions"):
+                # D-2: read the structured rsi field directly (primary path).
+                # Fall back to condition-text parsing only when the field is
+                # absent (defensive: supports payloads from older code paths).
+                rsi_val = sp.get("rsi")
+                if rsi_val is None and sp.get("conditions"):
                     for cond in sp["conditions"]:
                         if "RSI" in cond.get("label", "") and "RSI: " in cond.get("detail", ""):
                             try:

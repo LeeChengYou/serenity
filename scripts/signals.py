@@ -418,6 +418,11 @@ def evaluate_signal(
             "rr_ratio": None,
             "atr14": atr14,
             "ema20_ref": round(ema20, 4) if ema20 is not None else None,
+            # D-2: explicit numeric fields — no need to parse condition text.
+            # rsi may still be None here (insufficient bars); callers must handle that.
+            "rsi": round(rsi, 4) if rsi is not None else None,
+            "ema50": round(ema50, 4) if ema50 is not None else None,
+            "volume_ratio": round(volume_ratio, 4) if volume_ratio is not None else None,
             "score": score,
             "sentiment": sentiment,
             "insufficient_data": True,
@@ -458,6 +463,10 @@ def evaluate_signal(
         "rr_ratio": sizing["rr_ratio"],
         "atr14": round(atr14, 4) if atr14 is not None else None,
         "ema20_ref": round(ema20, 4) if ema20 is not None else None,
+        # D-2: explicit numeric fields — no need to parse condition text.
+        "rsi": round(rsi, 4) if rsi is not None else None,
+        "ema50": round(ema50, 4) if ema50 is not None else None,
+        "volume_ratio": round(volume_ratio, 4) if volume_ratio is not None else None,
         "score": score,
         "sentiment": sentiment,
         "insufficient_data": False,

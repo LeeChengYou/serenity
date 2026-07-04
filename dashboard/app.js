@@ -720,6 +720,7 @@ function renderSignalPanel(signal) {
     <div class="signal-head">
       <span class="sig-badge ${badgeClass}">${sig.replace(/_/g, ' ')}</span>
       ${signal.score != null ? `<span class="signal-pill">Score ${signal.score}</span>` : ''}
+      ${signal.rsi != null ? `<span class="signal-pill">RSI ${Number(signal.rsi).toFixed(1)}</span>` : ''}
       ${signal.atr14 != null ? `<span class="signal-pill">ATR ${Number(signal.atr14).toFixed(2)}</span>` : ''}
     </div>
     <div class="signal-conditions">
