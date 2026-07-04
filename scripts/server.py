@@ -65,7 +65,18 @@ try:
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
 except ImportError:
-    pass
+    # stdlib fallback so the Gemini key still loads without python-dotenv:
+    # parse simple KEY=VALUE lines, skipping comments and blank lines.
+    _env_file = ROOT / ".env"
+    if _env_file.exists():
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+            if _k and _k not in os.environ:
+                os.environ[_k] = _v
 
 
 _server_start_time = time.time()
@@ -1014,10 +1025,13 @@ def signal_payload(con, symbol: str) -> dict:
 
 
 _RELIABILITY_NOTE = (
-    "Serenity signals have NOT been validated out-of-sample. All historical "
-    "scores and signal states are computed on in-sample data; no temporal "
-    "hold-out test has been conducted. Do not treat any output as investment "
-    "advice or as evidence of predictive capability."
+    "Out-of-sample validation (30-day temporal holdout, cutoff 2026-06-02, "
+    "76 symbols) found BUY-side signals UNDERPERFORMED the universe median "
+    "(-20.3% vs -15.7%) and the quant score was anti-predictive across three "
+    "windows; EXIT_ALERT outperformed (+13pp) but with only n=5. Treat BUY "
+    "recommendations with extreme caution; exit/risk signals carry more "
+    "evidential support. Reproduce with scripts/backtest_holdout.py. This is "
+    "not investment advice."
 )
 
 
