@@ -83,16 +83,19 @@ def position_sizing(entry: float, atr14: float, rr_ratio: float = 2.0) -> dict:
     Compute ATR-based stop-loss and position sizing metrics.
 
     Args:
-        entry:    Midpoint entry price (EMA20 is used as the reference level).
+        entry:    Midpoint entry price anchored to the latest closing price
+                  (R-4 fix: entry is now the real latest close, NOT EMA20;
+                  EMA20 is returned separately as ema20_ref in the signal payload
+                  so the UI can still display it as a pullback reference level).
         atr14:    Current ATR(14) value.
         rr_ratio: Reward-to-risk multiplier (default 2.0 → 1:2 R:R).
 
     Returns dict with keys:
-        entry_zone   {"low": float, "high": float}  — ±0.5 ATR around entry
-        stop_loss    float
-        risk_per_share float
-        target       float
-        rr_ratio     float
+        entry_zone     {"low": float, "high": float}  — ±0.5 ATR around entry
+        stop_loss      float  — entry − 1.5×ATR
+        risk_per_share float  — 1.5×ATR
+        target         float  — entry + 3.0×ATR  (= 1.5×ATR × rr_ratio at default 2.0)
+        rr_ratio       float
     """
     stop_distance = atr14 * 1.5
     half_atr = atr14 * 0.5
@@ -414,6 +417,7 @@ def evaluate_signal(
             "target": None,
             "rr_ratio": None,
             "atr14": atr14,
+            "ema20_ref": round(ema20, 4) if ema20 is not None else None,
             "score": score,
             "sentiment": sentiment,
             "insufficient_data": True,
@@ -431,9 +435,10 @@ def evaluate_signal(
         volume_ratio, score, prev_score, gain_20d, sentiment,
     )
 
-    # Position sizing — use EMA20 as reference entry level
-    if ema20 is not None and atr14 is not None and atr14 > 0:
-        sizing = position_sizing(ema20, atr14, rr_ratio)
+    # Position sizing — R-4: anchor to latest close, not EMA20.
+    # EMA20 is preserved as ema20_ref for the UI's pullback-reference display.
+    if atr14 is not None and atr14 > 0:
+        sizing = position_sizing(latest_close, atr14, rr_ratio)
     else:
         sizing = {
             "entry_zone": None,
@@ -452,6 +457,7 @@ def evaluate_signal(
         "target": sizing["target"],
         "rr_ratio": sizing["rr_ratio"],
         "atr14": round(atr14, 4) if atr14 is not None else None,
+        "ema20_ref": round(ema20, 4) if ema20 is not None else None,
         "score": score,
         "sentiment": sentiment,
         "insufficient_data": False,

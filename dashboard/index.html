@@ -59,6 +59,7 @@
         <div class="tabs" style="padding: 0 16px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 8px;">
           <button class="active" id="tabChartBtn" onclick="switchDetailTab('chart')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">📈 價格走勢圖</button>
           <button id="tabScorecardBtn" onclick="switchDetailTab('scorecard')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">🎯 供應鏈瓶頸分析</button>
+          <button id="tabDossierBtn" onclick="switchDetailTab('dossier')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">📋 經理人分析</button>
         </div>
 
         <!-- Task B: Signal panel (populated by renderSignalPanel) -->
@@ -73,6 +74,11 @@
             <canvas id="rsiChart"></canvas>
           </div>
           <div id="neighbors" class="neighbors"></div>
+        </div>
+
+        <!-- Dossier (Manager View) — R-3 -->
+        <div id="dossierView" style="display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 16px;">
+          <div id="dossierContent"></div>
         </div>
 
         <!-- Scorecard view -->

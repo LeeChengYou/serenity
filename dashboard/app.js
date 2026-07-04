@@ -20,25 +20,35 @@ function showToast(msg, type = 'info', duration = 4000) {
 
 // Tab switching inside detail panel
 window.switchDetailTab = function(tab) {
-  const chartBtn = $('tabChartBtn');
-  const scoreBtn = $('tabScorecardBtn');
-  const chartView = $('chartView');
-  const scoreView = $('scorecardView');
+  const chartBtn   = $('tabChartBtn');
+  const scoreBtn   = $('tabScorecardBtn');
+  const dossierBtn = $('tabDossierBtn');
+  const chartView   = $('chartView');
+  const scoreView   = $('scorecardView');
+  const dossierView = $('dossierView');
+
+  chartBtn.classList.remove('active');
+  scoreBtn.classList.remove('active');
+  if (dossierBtn) dossierBtn.classList.remove('active');
+  chartView.style.display   = 'none';
+  scoreView.style.display   = 'none';
+  if (dossierView) dossierView.style.display = 'none';
 
   if (tab === 'chart') {
     chartBtn.classList.add('active');
-    scoreBtn.classList.remove('active');
     chartView.style.display = 'flex';
-    scoreView.style.display = 'none';
-  } else {
-    chartBtn.classList.remove('active');
+  } else if (tab === 'scorecard') {
     scoreBtn.classList.add('active');
-    chartView.style.display = 'none';
     scoreView.style.display = 'block';
-
     // Render radar chart now that the container is visible
     if (state.active) {
       renderScorecard(state.active, state.scorecardData);
+    }
+  } else if (tab === 'dossier') {
+    if (dossierBtn) dossierBtn.classList.add('active');
+    if (dossierView) dossierView.style.display = 'block';
+    if (state.active) {
+      loadAndRenderDossier(state.active);
     }
   }
 
@@ -295,7 +305,7 @@ async function init() {
       if (initTab !== 'chart') switchDetailTab(initTab);
       await selectSymbol(target, { pushState: false });
       // Replace current URL with canonical state (no extra history entry)
-      const tab = $('tabScorecardBtn').classList.contains('active') ? 'scorecard' : 'chart';
+      const tab = _activeTab();
       history.replaceState({ symbol: target, tab }, '', `/?s=${encodeURIComponent(target)}&tab=${tab}`);
     }
   } catch (err) {
@@ -320,7 +330,7 @@ async function init() {
 window.addEventListener('popstate', (e) => {
   if (!e.state || !e.state.symbol) return;
   const { symbol, tab = 'chart' } = e.state;
-  const curTab = $('tabScorecardBtn').classList.contains('active') ? 'scorecard' : 'chart';
+  const curTab = _activeTab();
   if (tab !== curTab) switchDetailTab(tab);
   if (symbol !== state.active) selectSymbol(symbol, { pushState: false });
 });
@@ -355,12 +365,19 @@ function renderSymbols() {
   document.querySelectorAll('.symbol-row').forEach(btn => btn.onclick = () => selectSymbol(btn.dataset.symbol));
 }
 
+function _activeTab() {
+  if ($('tabDossierBtn') && $('tabDossierBtn').classList.contains('active')) return 'dossier';
+  if ($('tabScorecardBtn').classList.contains('active')) return 'scorecard';
+  return 'chart';
+}
+
 async function selectSymbol(symbol, { pushState = true } = {}) {
   state.active = symbol;
+  state.dossierData = null; // reset dossier cache on symbol change
 
   // Task C: push URL state
   if (pushState) {
-    const activeTab = $('tabScorecardBtn').classList.contains('active') ? 'scorecard' : 'chart';
+    const activeTab = _activeTab();
     history.pushState({ symbol, tab: activeTab }, '', `/?s=${encodeURIComponent(symbol)}&tab=${activeTab}`);
   }
 
@@ -404,6 +421,11 @@ async function selectSymbol(symbol, { pushState = true } = {}) {
   // Only render scorecard if that tab is visible (radar needs visible container)
   if ($('tabScorecardBtn').classList.contains('active')) {
     renderScorecard(symbol, state.scorecardData);
+  }
+
+  // If dossier tab is active, refresh it for the new symbol
+  if ($('tabDossierBtn') && $('tabDossierBtn').classList.contains('active')) {
+    loadAndRenderDossier(symbol);
   }
 }
 
@@ -886,5 +908,144 @@ $('clearMemoryBtn').onclick = async () => {
     showToast('清空記憶失敗：' + err.message, 'error');
   }
 };
+
+// ── R-3: Manager View (Dossier) panel ────────────────────────────────────────
+
+async function loadAndRenderDossier(symbol, refresh = false) {
+  const el = $('dossierContent');
+  if (!el) return;
+  el.innerHTML = '<p style="color:var(--muted);padding:20px;font-size:13px;">載入經理人分析中...</p>';
+  try {
+    const url = `/api/dossier/${encodeURIComponent(symbol)}${refresh ? '?refresh=1' : ''}`;
+    const data = await json(url);
+    state.dossierData = data;
+    renderDossier(data);
+  } catch (err) {
+    el.innerHTML = `<p style="color:var(--muted);padding:20px;font-size:13px;">載入失敗：${escapeHtml(err.message)}</p>`;
+  }
+}
+
+window.refreshDossier = function() {
+  if (state.active) loadAndRenderDossier(state.active, true);
+};
+
+function renderDossier(d) {
+  const el = $('dossierContent');
+  if (!el || !d) return;
+
+  const mv = d.manager_view || null;
+  const rec = mv ? mv.recommendation : null;
+  const conv = mv ? mv.conviction : null;
+
+  // Recommendation badge colour per spec
+  const recColor = {
+    AVOID:      '#ff6b35',  // ember
+    REDUCE:     '#ff6b35',  // ember
+    WATCH:      '#888',     // gray
+    ACCUMULATE: '#c3f73a',  // acid-green
+    HOLD:       '#c3f73a',  // acid-green
+  }[rec] || '#888';
+  const recTextColor = (rec === 'ACCUMULATE' || rec === 'HOLD') ? '#182019' : '#fff';
+
+  const fmt = v => v == null ? '—' : `$${Number(v).toFixed(2)}`;
+  const ent = d.signal && d.signal.entry_zone;
+  const entStr = (ent && ent.low != null && ent.high != null)
+    ? `${fmt(ent.low)} – ${fmt(ent.high)}`
+    : '—';
+
+  // Technicals summary
+  const tech = d.technicals || {};
+  const quant = d.quant || {};
+  const sent = d.sentiment || null;
+  const scorecard = d.scorecard || null;
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        ${rec ? `<span style="font-size:15px;font-weight:bold;padding:5px 14px;border-radius:6px;background:${recColor};color:${recTextColor};">${rec}</span>` : '<span style="color:var(--muted);font-size:13px;">推薦評等：AI 未生成</span>'}
+        ${conv ? `<span style="font-size:12px;color:var(--muted);background:rgba(0,0,0,0.06);padding:3px 10px;border-radius:4px;">信心度：${conv}</span>` : ''}
+        <span style="font-size:11px;color:var(--muted);">${escapeHtml(d.symbol || '')} · ${escapeHtml(d.as_of || '')}</span>
+      </div>
+      <button onclick="refreshDossier()" style="font-size:11px;font-weight:bold;background:transparent;color:var(--green);border:1px solid var(--green);padding:4px 10px;border-radius:6px;cursor:pointer;">重新生成</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
+      <div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">量化分數</div>
+        <div style="font-size:18px;font-weight:bold;">${quant.score != null ? quant.score : '—'}</div>
+        <div style="font-size:10px;color:var(--muted);">${escapeHtml(quant.source || '')}</div>
+      </div>
+      <div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">訊號狀態</div>
+        <div style="font-size:13px;font-weight:bold;">${escapeHtml((d.signal && d.signal.state) || '—')}</div>
+      </div>
+      <div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">RSI</div>
+        <div style="font-size:18px;font-weight:bold;">${tech.rsi != null ? Number(tech.rsi).toFixed(1) : '—'}</div>
+      </div>
+      <div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">ATR%</div>
+        <div style="font-size:18px;font-weight:bold;">${tech.atr_pct != null ? tech.atr_pct + '%' : '—'}</div>
+      </div>
+      <div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">趨勢</div>
+        <div style="font-size:12px;font-weight:bold;">${escapeHtml(tech.trend || '—')}</div>
+      </div>
+      ${sent ? `<div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">StockTwits 多空比</div>
+        <div style="font-size:13px;font-weight:bold;">${sent.stocktwits_bull_ratio != null ? (sent.stocktwits_bull_ratio * 100).toFixed(0) + '% 多' : '—'}</div>
+        <div style="font-size:10px;color:var(--muted);">n=${sent.sample}</div>
+      </div>` : ''}
+      ${scorecard ? `<div style="background:rgba(0,0,0,0.04);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">供應鏈記分卡</div>
+        <div style="font-size:15px;font-weight:bold;">${scorecard.final_score}</div>
+        <div style="font-size:10px;color:var(--muted);">${escapeHtml(scorecard.verdict || '')}</div>
+      </div>` : ''}
+    </div>
+
+    ${mv ? `
+    <div style="margin-bottom:14px;">
+      <h4 style="font-size:12px;font-weight:bold;color:var(--ink);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;">投資論述</h4>
+      <p style="font-size:13px;line-height:1.6;margin:0;">${escapeHtml(mv.thesis)}</p>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+      <div style="background:rgba(195,247,58,0.08);border:1px solid rgba(195,247,58,0.3);border-radius:6px;padding:10px;">
+        <h4 style="font-size:11px;font-weight:bold;color:#4a7c00;margin:0 0 5px;">多頭案例</h4>
+        <p style="font-size:12px;line-height:1.5;margin:0;">${escapeHtml(mv.bull_case)}</p>
+      </div>
+      <div style="background:rgba(255,107,53,0.06);border:1px solid rgba(255,107,53,0.2);border-radius:6px;padding:10px;">
+        <h4 style="font-size:11px;font-weight:bold;color:#c0390a;margin:0 0 5px;">空頭案例</h4>
+        <p style="font-size:12px;line-height:1.5;margin:0;">${escapeHtml(mv.bear_case)}</p>
+      </div>
+    </div>
+    <div style="margin-bottom:14px;background:rgba(0,0,0,0.04);border-radius:6px;padding:10px;">
+      <h4 style="font-size:11px;font-weight:bold;margin:0 0 4px;">倉位建議</h4>
+      <p style="font-size:12px;line-height:1.5;margin:0;">${escapeHtml(mv.position_guidance)}</p>
+      <div style="margin-top:6px;font-size:11px;color:var(--muted);">進場區：${entStr} &nbsp;|&nbsp; 止損：${fmt(d.signal && d.signal.stop_loss)} &nbsp;|&nbsp; 目標：${fmt(d.signal && d.signal.target)}</div>
+    </div>
+    ` : `
+    <div style="margin-bottom:14px;padding:12px;background:rgba(0,0,0,0.04);border-radius:6px;color:var(--muted);font-size:12px;">
+      AI 敘事未生成（API 金鑰未設定或呼叫失敗）。以上量化數據已完整呈現。
+    </div>
+    `}
+
+    ${(d.evidence && d.evidence.length) ? `
+    <div style="margin-bottom:14px;">
+      <h4 style="font-size:12px;font-weight:bold;color:var(--ink);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;">高參與度推文證據</h4>
+      ${d.evidence.map(ev => `
+        <div style="margin-bottom:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:11.5px;line-height:1.4;">
+          <div style="color:var(--muted);font-size:10px;margin-bottom:3px;">${escapeHtml(ev.date || '')} &middot; 參與度 ${ev.engagement || 0}</div>
+          <p style="margin:0 0 4px;">${escapeHtml((ev.text || '').slice(0, 300))}${(ev.text || '').length > 300 ? '...' : ''}</p>
+          ${ev.url ? `<a href="${escapeHtml(ev.url)}" target="_blank" rel="noreferrer" style="font-size:10px;color:var(--green);">在 X 上查看</a>` : ''}
+        </div>
+      `).join('')}
+    </div>
+    ` : ''}
+
+    <div style="margin-top:16px;padding:8px 10px;border:1px dashed rgba(0,0,0,0.18);border-radius:4px;font-size:10px;color:var(--muted);line-height:1.4;">
+      ${escapeHtml(d.reliability_note || '')}
+    </div>
+  `;
+}
 
 init().catch(err => document.body.insertAdjacentHTML('afterbegin', `<pre>${escapeHtml(err.message)}</pre>`));

@@ -148,6 +148,28 @@ def _init_schema(con):
             created_at  text default (datetime('now'))
         )
     """)
+    # R-5: signal_history — daily snapshots for hit-rate tracking (idempotent)
+    con.execute("""
+        create table if not exists signal_history (
+            symbol      text not null,
+            date        text not null,
+            signal      text,
+            score       real,
+            score_source text,
+            close       real,
+            rsi         real,
+            atr14       real,
+            primary key (symbol, date)
+        )
+    """)
+    # R-3: dossier cache — avoids re-billing Gemini on every view (idempotent)
+    con.execute("""
+        create table if not exists dossiers (
+            symbol      text primary key,
+            dossier_json text not null,
+            created_at  text not null
+        )
+    """)
     try:
         con.execute(
             "create index if not exists idx_scorecard_history_symbol "
@@ -260,6 +282,18 @@ class Handler(SimpleHTTPRequestHandler):
             if path.startswith("/api/symbol/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 return symbol_payload(con, symbol)
+            if path.startswith("/api/signal/history/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                rows = [dict(r) for r in con.execute(
+                    "select symbol, date, signal, score, score_source, close, rsi, atr14 "
+                    "from signal_history where symbol=? order by date asc",
+                    (symbol,),
+                )]
+                return {"symbol": symbol, "history": rows}
+            if path.startswith("/api/dossier/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                refresh = (query.get("refresh") or ["0"])[0] == "1"
+                return dossier_payload(con, symbol, refresh=refresh)
             if path.startswith("/api/signal/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 return signal_payload(con, symbol)
@@ -979,6 +1013,375 @@ def signal_payload(con, symbol: str) -> dict:
     return result
 
 
+_RELIABILITY_NOTE = (
+    "Serenity signals have NOT been validated out-of-sample. All historical "
+    "scores and signal states are computed on in-sample data; no temporal "
+    "hold-out test has been conducted. Do not treat any output as investment "
+    "advice or as evidence of predictive capability."
+)
+
+
+def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
+    """
+    R-3: Build (or return cached) the /api/dossier/<SYM> response.
+
+    Assembles all real evidence from SQLite, generates a Gemini manager_view
+    narrative from ONLY that data, and caches the result in the `dossiers`
+    table.  Pass refresh=True to bypass the cache and regenerate.
+
+    Graceful degradation: if the Gemini call fails (no key, network error,
+    parse error), manager_view is set to null and the full data dossier is
+    still returned.
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+
+    # --- 1. Check cache (unless refresh requested) ---
+    if not refresh:
+        cached = con.execute(
+            "select dossier_json from dossiers where symbol=?", (symbol,)
+        ).fetchone()
+        if cached:
+            try:
+                return json.loads(cached[0])
+            except Exception:
+                pass
+
+    # --- 2. Fetch real OHLCV bars ---
+    bars = [dict(r) for r in con.execute(
+        "select date, open, high, low, close, volume "
+        "from prices where symbol=? order by date",
+        (symbol,),
+    )]
+
+    latest_close = None
+    for b in reversed(bars):
+        c = b.get("close")
+        if c is not None:
+            try:
+                latest_close = float(c)
+                break
+            except (TypeError, ValueError):
+                pass
+
+    # --- 3. Compute indicators ---
+    indicators = {}
+    if bars:
+        try:
+            indicators = _compute_indicators(bars)
+        except Exception:
+            pass
+
+    ema20_series = indicators.get("ema20", [])
+    ema50_series = indicators.get("ema50", [])
+    rsi_series = indicators.get("rsi14", [])
+    atr14 = indicators.get("atr14")
+
+    def _lat(series):
+        for v in reversed(series):
+            if v is not None:
+                return v
+        return None
+
+    ema20 = _lat(ema20_series)
+    ema50 = _lat(ema50_series)
+    rsi = _lat(rsi_series)
+
+    # --- 4. Quant score + components ---
+    score = None
+    score_source = None
+    quant_components = {}
+    sc_row = con.execute(
+        "select final_score from scorecards where symbol=?", (symbol,)
+    ).fetchone()
+    if sc_row and sc_row[0] is not None:
+        score = sc_row[0]
+        score_source = "scorecard"
+
+    if _quant_score is not None:
+        try:
+            q = _quant_score(DB_PATH, symbol)
+            if q:
+                quant_components = q.get("components", {})
+                if score is None and q.get("score") is not None:
+                    score = q["score"]
+                    score_source = "quant"
+        except Exception:
+            pass
+
+    quant_section = {
+        "score": score,
+        "source": score_source,
+        "components": quant_components,
+    }
+
+    # --- 5. Technicals section ---
+    trend = None
+    if latest_close is not None and ema50 is not None:
+        trend = "above EMA50" if latest_close > ema50 else "below EMA50"
+    elif latest_close is not None and ema20 is not None:
+        trend = "above EMA20" if latest_close > ema20 else "below EMA20"
+
+    atr_pct = None
+    if atr14 is not None and latest_close is not None and latest_close > 0:
+        atr_pct = round(atr14 / latest_close * 100, 2)
+
+    technicals_section = {
+        "latest_close": latest_close,
+        "trend": trend,
+        "ema20": round(ema20, 4) if ema20 is not None else None,
+        "ema50": round(ema50, 4) if ema50 is not None else None,
+        "rsi": round(rsi, 2) if rsi is not None else None,
+        "atr14": round(atr14, 4) if atr14 is not None else None,
+        "atr_pct": atr_pct,
+    }
+
+    # --- 6. Signal section (reuse signal_payload internals) ---
+    sig_data = signal_payload(con, symbol)
+    signal_section = {
+        "state": sig_data.get("signal", "NEUTRAL"),
+        "key_conditions": [
+            c for c in (sig_data.get("conditions") or []) if c.get("met")
+        ],
+        "entry_zone": sig_data.get("entry_zone"),
+        "stop_loss": sig_data.get("stop_loss"),
+        "target": sig_data.get("target"),
+        "ema20_ref": sig_data.get("ema20_ref"),
+    }
+
+    # --- 7. Sentiment section ---
+    sent_rows = con.execute(
+        "select sentiment from news_sentiment where symbol=? "
+        "order by published_at desc limit 100",
+        (symbol,),
+    ).fetchall()
+    sentiment_section = None
+    if sent_rows:
+        bull = sum(1 for (s,) in sent_rows if s == "Bullish")
+        bear = sum(1 for (s,) in sent_rows if s == "Bearish")
+        tagged = bull + bear
+        sentiment_section = {
+            "stocktwits_bull_ratio": round(bull / tagged, 3) if tagged else None,
+            "bull": bull,
+            "bear": bear,
+            "sample": tagged,
+        }
+
+    # --- 8. Scorecard summary ---
+    sc_full = con.execute(
+        "select symbol, final_score, verdict, factors_json from scorecards where symbol=?",
+        (symbol,),
+    ).fetchone()
+    scorecard_section = None
+    if sc_full:
+        top_factors = []
+        try:
+            fd = json.loads(sc_full["factors_json"] or "{}")
+            top_factors = sorted(
+                [{"name": k, "points": v.get("points", 0)} for k, v in fd.items()],
+                key=lambda x: x["points"],
+                reverse=True,
+            )[:3]
+        except Exception:
+            pass
+        scorecard_section = {
+            "final_score": sc_full["final_score"],
+            "verdict": sc_full["verdict"],
+            "top_factors": top_factors,
+        }
+
+    # --- 9. Evidence: top 3 tweets by engagement ---
+    evidence_rows = con.execute(
+        """select m.text, t.url, t.favorite_count, t.reply_count,
+                  t.retweet_count, m.mentioned_at
+           from mentions m join tweets t on t.tweet_id=m.tweet_id
+           where m.symbol=?
+           order by (coalesce(t.favorite_count,0)
+                     + 2*coalesce(t.retweet_count,0)
+                     + coalesce(t.reply_count,0)) desc
+           limit 3""",
+        (symbol,),
+    ).fetchall()
+    evidence_section = [
+        {
+            "text": (r["text"] or "")[:400],
+            "url": r["url"],
+            "date": (r["mentioned_at"] or "")[:10],
+            "engagement": (
+                (r["favorite_count"] or 0)
+                + 2 * (r["retweet_count"] or 0)
+                + (r["reply_count"] or 0)
+            ),
+        }
+        for r in evidence_rows
+    ]
+
+    # --- 10. Build Gemini prompt and call for manager_view ---
+    manager_view = None
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        try:
+            prompt_data = {
+                "symbol": symbol,
+                "as_of": as_of,
+                "latest_close": latest_close,
+                "quant_score": score,
+                "score_source": score_source,
+                "quant_components": quant_components,
+                "technicals": technicals_section,
+                "signal_state": signal_section["state"],
+                "key_conditions_met": [c["label"] for c in signal_section["key_conditions"]],
+                "entry_zone": signal_section["entry_zone"],
+                "stop_loss": signal_section["stop_loss"],
+                "target": signal_section["target"],
+                "sentiment": sentiment_section,
+                "scorecard": scorecard_section,
+                "top_evidence_snippets": [e["text"][:200] for e in evidence_section],
+            }
+
+            system_instruction = (
+                "You are a senior quantitative investment analyst generating a structured manager-view dossier. "
+                "CRITICAL RULES:\n"
+                "1. You MUST use ONLY the data provided in the user's JSON payload. Do NOT introduce any external facts, "
+                "market knowledge, or opinions not present in the payload.\n"
+                "2. If the data is insufficient, say so explicitly in the thesis field.\n"
+                "3. All numbers you cite must come verbatim from the payload.\n"
+                "4. Return ONLY valid JSON with exactly these fields: "
+                "thesis (string), bull_case (string), bear_case (string), "
+                "conviction (one of: LOW, MEDIUM, HIGH), "
+                "recommendation (one of: AVOID, WATCH, ACCUMULATE, HOLD, REDUCE), "
+                "position_guidance (string — ATR-based, anchored to latest close from the payload).\n"
+                "5. Write in English. Be concise. Do not invent facts."
+            )
+
+            user_text = (
+                f"Generate a manager-view dossier for ${symbol} using ONLY the following real data:\n\n"
+                + json.dumps(prompt_data, ensure_ascii=False, indent=2)
+            )
+
+            model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            res_data = call_gemini(
+                model_name=model_name,
+                contents=[{"role": "user", "parts": [{"text": user_text}]}],
+                system_instruction=system_instruction,
+                temperature=0.25,
+                response_mime_type="application/json",
+            )
+            reply_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+            mv = json.loads(reply_text)
+            # Defensive: ensure required keys exist
+            manager_view = {
+                "thesis": str(mv.get("thesis") or ""),
+                "bull_case": str(mv.get("bull_case") or ""),
+                "bear_case": str(mv.get("bear_case") or ""),
+                "conviction": str(mv.get("conviction") or "LOW"),
+                "recommendation": str(mv.get("recommendation") or "WATCH"),
+                "position_guidance": str(mv.get("position_guidance") or ""),
+            }
+        except Exception as exc:
+            print(f"[Dossier] Gemini call failed for {symbol}: {exc}")
+            manager_view = None
+
+    # --- 11. Assemble full dossier ---
+    dossier = {
+        "symbol": symbol,
+        "as_of": as_of,
+        "quant": quant_section,
+        "technicals": technicals_section,
+        "signal": signal_section,
+        "sentiment": sentiment_section,
+        "scorecard": scorecard_section,
+        "evidence": evidence_section,
+        "manager_view": manager_view,
+        "reliability_note": _RELIABILITY_NOTE,
+    }
+
+    # --- 12. Cache in dossiers table ---
+    try:
+        con.execute(
+            """insert into dossiers (symbol, dossier_json, created_at)
+               values (?, ?, ?)
+               on conflict(symbol) do update set
+                   dossier_json=excluded.dossier_json,
+                   created_at=excluded.created_at""",
+            (symbol, json.dumps(dossier, ensure_ascii=False), datetime.now().isoformat()),
+        )
+        con.commit()
+    except Exception as exc:
+        print(f"[Dossier] Cache write failed for {symbol}: {exc}")
+
+    return dossier
+
+
+def snapshot_signals():
+    """
+    R-5: Upsert today's signal row for every symbol that has price data.
+
+    Idempotent — running twice on the same day overwrites the row with
+    identical data, leaving the table consistent.  Reuses signal_payload
+    so all computation is DRY.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    con = db()
+    try:
+        symbols = [
+            r[0] for r in con.execute(
+                "select distinct symbol from prices"
+            ).fetchall()
+        ]
+        inserted = 0
+        for sym in symbols:
+            try:
+                sp = signal_payload(con, sym)
+                rsi_val = None
+                if sp.get("conditions"):
+                    for cond in sp["conditions"]:
+                        if "RSI" in cond.get("label", "") and "RSI: " in cond.get("detail", ""):
+                            try:
+                                rsi_val = float(cond["detail"].split("RSI: ")[1].split()[0])
+                            except Exception:
+                                pass
+                            break
+
+                latest_close = None
+                bars = con.execute(
+                    "select close from prices where symbol=? order by date desc limit 1",
+                    (sym,),
+                ).fetchone()
+                if bars:
+                    latest_close = bars[0]
+
+                con.execute(
+                    """insert into signal_history
+                           (symbol, date, signal, score, score_source, close, rsi, atr14)
+                       values (?, ?, ?, ?, ?, ?, ?, ?)
+                       on conflict(symbol, date) do update set
+                           signal=excluded.signal,
+                           score=excluded.score,
+                           score_source=excluded.score_source,
+                           close=excluded.close,
+                           rsi=excluded.rsi,
+                           atr14=excluded.atr14""",
+                    (
+                        sym,
+                        today,
+                        sp.get("signal"),
+                        sp.get("score"),
+                        sp.get("score_source"),
+                        latest_close,
+                        rsi_val,
+                        sp.get("atr14"),
+                    ),
+                )
+                inserted += 1
+            except Exception as exc:
+                print(f"[Snapshot] {sym} failed: {exc}")
+        con.commit()
+        print(f"[Snapshot] signal_history upserted {inserted} rows for {today}.")
+        return inserted
+    finally:
+        con.close()
+
+
 def run_background_ingest():
     # Wait 10 seconds after server starts
     time.sleep(10)
@@ -992,12 +1395,18 @@ def run_background_ingest():
                 print("[Scheduler] Automatic incremental price update completed successfully.")
             else:
                 print(f"[Scheduler] Price update returned code {res.returncode}. Stderr: {res.stderr.strip()}")
-            
+
+            # R-5: snapshot today's signals for hit-rate tracking
+            try:
+                snapshot_signals()
+            except Exception as snap_exc:
+                print(f"[Scheduler] snapshot_signals warning: {snap_exc}")
+
             # Apply memory decay daily
             decay_memories()
         except Exception as e:
             print(f"[Scheduler] Background ingest warning: {e}")
-        
+
         # Run every 12 hours
         time.sleep(12 * 3600)
 
@@ -1006,12 +1415,23 @@ def main():
     ap = argparse.ArgumentParser(description="Serve the Serenity dashboard")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
+    ap.add_argument(
+        "--snapshot-once",
+        action="store_true",
+        help="R-5: Run signal_history snapshot for all priced symbols and exit (no server start).",
+    )
     args = ap.parse_args()
-    
+
+    # R-5 CLI hook: run snapshot and exit immediately (no server start)
+    if args.snapshot_once:
+        count = snapshot_signals()
+        print(f"[snapshot-once] Done — {count} rows upserted.")
+        return
+
     # Start background scheduler thread
     t = threading.Thread(target=run_background_ingest, daemon=True)
     t.start()
-    
+
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"dashboard: http://{args.host}:{args.port}")
     server.serve_forever()
