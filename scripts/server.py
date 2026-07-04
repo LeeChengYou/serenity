@@ -907,17 +907,17 @@ def signal_payload(con, symbol: str) -> dict:
     if sc_row:
         score = sc_row[0]
 
-    # Previous score from scorecard_history (second-most-recent entry)
-    hist_rows = con.execute(
+    # Previous score = the most recently archived scorecard.  The current
+    # score lives in `scorecards`; every prior version is appended to
+    # `scorecard_history` before being overwritten, so the newest history
+    # row is the immediately-previous score.
+    hist_row = con.execute(
         "select final_score from scorecard_history where symbol=? "
-        "order by created_at desc limit 2",
+        "order by created_at desc limit 1",
         (symbol,),
-    ).fetchall()
-    if len(hist_rows) >= 2:
-        prev_score = hist_rows[1][0]
-    elif len(hist_rows) == 1 and score is not None:
-        # Only one history row; compare against it
-        prev_score = hist_rows[0][0]
+    ).fetchone()
+    if hist_row:
+        prev_score = hist_row[0]
 
     result = _evaluate_signal(
         latest_close=latest_close,
