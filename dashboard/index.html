@@ -139,7 +139,10 @@
 
           <!-- News panel -->
           <div id="newsPanel" class="info-card">
-            <div class="info-card-head">📰 個股新聞</div>
+            <div class="info-card-head" style="display:flex;align-items:center;justify-content:space-between;">
+              <span>📰 個股新聞</span>
+              <button id="newsTranslateBtn" class="translate-btn" onclick="toggleNewsTranslation()" title="切換繁中翻譯">譯 中</button>
+            </div>
             <div id="newsContent" class="news-content">
               <p class="placeholder-text">資料尚未抓取</p>
             </div>
@@ -150,6 +153,7 @@
             <summary class="evidence-summary">
               X 貼文證據
               <span id="evidenceCount" class="evidence-count"></span>
+              <button id="feedTranslateBtn" class="translate-btn" onclick="event.stopPropagation();toggleFeedTranslation()" title="切換繁中翻譯" style="margin-left:auto;">譯 中</button>
             </summary>
             <div id="feed" class="feed feed-accordion"></div>
           </details>

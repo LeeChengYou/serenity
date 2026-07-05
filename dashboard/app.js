@@ -16,6 +16,13 @@ let state = {
   chatHistory: []
 };
 
+// ── R4-2 Translation state ────────────────────────────────────────────────────
+// cache persists across symbol changes; mode resets on new symbol selection
+const _xlate = {
+  news: { mode: 'en', cache: new Map(), data: null },
+  feed: { mode: 'en', cache: new Map(), items: [] },
+};
+
 const $ = (id) => document.getElementById(id);
 const fmtDate = (v) => v ? new Date(v).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
 const money = (v) => v == null ? '-' : `$${Number(v).toFixed(2)}`;
@@ -681,12 +688,17 @@ function renderEstimates(d) {
 async function loadNews(symbol) {
   const el = $('newsContent');
   if (!el) return;
+  // Reset translation mode on new symbol (keep cache)
+  _xlate.news.mode = 'en';
+  _xlate.news.data = null;
+  _updateTranslateBtn('newsTranslateBtn', 'en');
   try {
     const data = await fetch(`/api/news/${encodeURIComponent(symbol)}`).then(r => {
       if (!r.ok) throw new Error(r.status);
       return r.json();
     });
     if (!data || data.error || (!data.items?.length && !data.macro?.length)) throw new Error('empty');
+    _xlate.news.data = data;
     renderNews(data);
   } catch (_) {
     el.innerHTML = '<p class="placeholder-text">資料尚未抓取</p>';
@@ -704,49 +716,186 @@ function relTime(ts) {
   return `${d}d 前`;
 }
 
-function renderNewsItems(items) {
+function renderNewsItems(items, xlateCache) {
   if (!items || !items.length) return '<p class="placeholder-text">暫無新聞</p>';
-  return items.map(it => `
-    <div class="news-item">
-      <a href="${escapeHtml(it.url || '#')}" target="_blank" rel="noreferrer" class="news-title">${escapeHtml(it.title || '—')}</a>
-      <div class="news-meta">
-        <span class="news-source">${escapeHtml(it.source || '')}</span>
-        <span class="news-time">${relTime(it.published_at)}</span>
+  return items.map(it => {
+    const titleZh  = xlateCache && it.title   ? xlateCache.get(it.title)   : null;
+    const summaryZh = xlateCache && it.summary ? xlateCache.get(it.summary) : null;
+    const titleHtml = titleZh
+      ? `<a href="${escapeHtml(it.url || '#')}" target="_blank" rel="noreferrer" class="news-title">${escapeHtml(titleZh)}</a>
+         <div class="news-title-en">${escapeHtml(it.title || '')}</div>`
+      : `<a href="${escapeHtml(it.url || '#')}" target="_blank" rel="noreferrer" class="news-title">${escapeHtml(it.title || '—')}</a>`;
+    let summaryHtml = '';
+    if (it.summary) {
+      if (summaryZh) {
+        summaryHtml = `<p class="news-summary-zh">${escapeHtml(summaryZh)}</p>
+                       <p class="news-summary-en">${escapeHtml(it.summary)}</p>`;
+      } else {
+        summaryHtml = `<p class="news-summary">${escapeHtml(it.summary)}</p>`;
+      }
+    }
+    return `
+      <div class="news-item">
+        ${titleHtml}
+        <div class="news-meta">
+          <span class="news-source">${escapeHtml(it.source || '')}</span>
+          <span class="news-time">${relTime(it.published_at)}</span>
+        </div>
+        ${summaryHtml}
       </div>
-      ${it.summary ? `<p class="news-summary">${escapeHtml(it.summary)}</p>` : ''}
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
-function renderNews(data) {
+function renderNews(data, xlateCache) {
   const el = $('newsContent');
   if (!el) return;
-  const items  = data.items  || [];
-  const macro  = data.macro  || [];
+  const items = data.items || [];
+  const macro = data.macro || [];
+  const cache = xlateCache || null;
   el.innerHTML = `
     <div class="news-section-label">個股新聞</div>
-    ${renderNewsItems(items)}
-    ${macro.length ? `<div class="news-section-label" style="margin-top:12px;">國際 / 總經</div>${renderNewsItems(macro)}` : ''}
+    ${renderNewsItems(items, cache)}
+    ${macro.length ? `<div class="news-section-label" style="margin-top:12px;">國際 / 總經</div>${renderNewsItems(macro, cache)}` : ''}
     ${data.as_of ? `<div style="font-size:10px;color:var(--muted);margin-top:8px;text-align:right;">截至 ${data.as_of}</div>` : ''}
   `;
 }
 
 // ── Feed (X posts) rendered inside accordion ──────────────────────────────────
 
-function renderFeed(items) {
+function renderFeed(items, xlateCache) {
   const el = $('feed');
   if (!el) return;
   // Update evidence count badge
   const badge = $('evidenceCount');
   if (badge) badge.textContent = items.length ? `(${items.length})` : '';
-  el.innerHTML = items.map(i => `
-    <article class="feed-item">
-      <div><span class="ticker">$${i.symbol}</span> <span class="tiny">${fmtDate(i.mentioned_at)} / ${i.source}</span></div>
-      <p>${escapeHtml(clip(i.text, 340))}</p>
-      <a href="${i.url}" target="_blank" rel="noreferrer">open on X</a>
-    </article>
-  `).join('');
+  el.innerHTML = items.map(i => {
+    const textZh = xlateCache ? xlateCache.get(clip(i.text, 340)) : null;
+    const bodyHtml = textZh
+      ? `<p class="feed-text-zh">${escapeHtml(textZh)}</p>
+         <p class="feed-text-en">${escapeHtml(clip(i.text, 340))}</p>`
+      : `<p>${escapeHtml(clip(i.text, 340))}</p>`;
+    return `
+      <article class="feed-item">
+        <div><span class="ticker">$${i.symbol}</span> <span class="tiny">${fmtDate(i.mentioned_at)} / ${i.source}</span></div>
+        ${bodyHtml}
+        <a href="${i.url}" target="_blank" rel="noreferrer">open on X</a>
+      </article>
+    `;
+  }).join('');
 }
+
+// ── R4-2: Translation toggle helpers ─────────────────────────────────────────
+
+function _updateTranslateBtn(id, mode) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.textContent = mode === 'zh' ? 'EN' : '譯 中';
+  btn.disabled = false;
+}
+
+/** Collect unique non-empty strings from items' title/summary (deduplicated, cache-miss only). */
+function _uncachedTexts(items, fields, cache) {
+  const texts = [];
+  const seen = new Set();
+  for (const it of items) {
+    for (const f of fields) {
+      const t = (it[f] || '').trim();
+      if (t && !seen.has(t) && !cache.has(t)) {
+        texts.push(t);
+        seen.add(t);
+      }
+    }
+  }
+  return texts;
+}
+
+/** POST /api/translate with up to 20 texts per call; updates cache in-place. */
+async function _fetchTranslations(texts, cache) {
+  // Batch in groups of 20
+  for (let i = 0; i < texts.length; i += 20) {
+    const chunk = texts.slice(i, i + 20);
+    const resp = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texts: chunk }),
+    }).then(r => r.json());
+    if (resp.error && !resp.translations?.length) throw new Error(resp.error);
+    (resp.translations || []).forEach((t, idx) => {
+      if (t) cache.set(chunk[idx], t);
+    });
+  }
+}
+
+/** Toggle news panel between English and 繁中. */
+window.toggleNewsTranslation = async function() {
+  const btn = $('newsTranslateBtn');
+  if (!btn || !_xlate.news.data) return;
+
+  if (_xlate.news.mode === 'zh') {
+    // Revert to English
+    _xlate.news.mode = 'en';
+    _updateTranslateBtn('newsTranslateBtn', 'en');
+    renderNews(_xlate.news.data, null);
+    return;
+  }
+
+  // Collect uncached texts
+  const allItems = [...(_xlate.news.data.items || []), ...(_xlate.news.data.macro || [])];
+  const toFetch = _uncachedTexts(allItems, ['title', 'summary'], _xlate.news.cache);
+
+  if (toFetch.length > 0) {
+    btn.textContent = '翻譯中…';
+    btn.disabled = true;
+    try {
+      await _fetchTranslations(toFetch, _xlate.news.cache);
+    } catch (_) {
+      btn.textContent = '翻譯暫時不可用';
+      btn.disabled = false;
+      setTimeout(() => _updateTranslateBtn('newsTranslateBtn', 'en'), 3000);
+      return;
+    }
+  }
+
+  _xlate.news.mode = 'zh';
+  _updateTranslateBtn('newsTranslateBtn', 'zh');
+  renderNews(_xlate.news.data, _xlate.news.cache);
+};
+
+/** Toggle X posts feed between English and 繁中. */
+window.toggleFeedTranslation = async function() {
+  const btn = $('feedTranslateBtn');
+  if (!btn) return;
+
+  if (_xlate.feed.mode === 'zh') {
+    // Revert to English
+    _xlate.feed.mode = 'en';
+    _updateTranslateBtn('feedTranslateBtn', 'en');
+    renderFeed(_xlate.feed.items, null);
+    return;
+  }
+
+  // Feed stores clipped text, so translate the clipped version
+  const clippedItems = (_xlate.feed.items || []).map(i => ({ text: clip(i.text, 340) }));
+  const toFetch = _uncachedTexts(clippedItems, ['text'], _xlate.feed.cache);
+
+  if (toFetch.length > 0) {
+    btn.textContent = '翻譯中…';
+    btn.disabled = true;
+    try {
+      await _fetchTranslations(toFetch, _xlate.feed.cache);
+    } catch (_) {
+      btn.textContent = '翻譯暫時不可用';
+      btn.disabled = false;
+      setTimeout(() => _updateTranslateBtn('feedTranslateBtn', 'en'), 3000);
+      return;
+    }
+  }
+
+  _xlate.feed.mode = 'zh';
+  _updateTranslateBtn('feedTranslateBtn', 'zh');
+  renderFeed(_xlate.feed.items, _xlate.feed.cache);
+};
 
 // ── R3-2: Regime badge ────────────────────────────────────────────────────────
 
@@ -1107,7 +1256,9 @@ async function init() {
 
   try {
     const feed = await json('/api/feed?limit=36');
-    renderFeed(feed.items || []);
+    _xlate.feed.items = feed.items || [];
+    _xlate.feed.mode = 'en';
+    renderFeed(_xlate.feed.items);
   } catch (err) { console.error('Failed to load feed:', err); }
 
   updateMemoryStatus();
