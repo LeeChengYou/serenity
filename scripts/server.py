@@ -14,9 +14,17 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+# ---------------------------------------------------------------------------
+# Benchmark symbols — same constant as ingest.py (R3-2).
+# Excluded from all universe queries: signals, snapshots, hit-rate, /api/symbols.
+# ---------------------------------------------------------------------------
+BENCHMARK_SYMBOLS: set = {"SPY", "SOXX", "QQQ"}
+
 # Technical indicators (stdlib only, no pandas/numpy)
+_compute_ema = None  # populated below
 try:
     from indicators import compute_all as _compute_indicators
+    from indicators import compute_ema as _compute_ema
 except ImportError:
     # If server is run from a different cwd, try the scripts/ folder path
     import importlib.util as _ilu
@@ -27,6 +35,7 @@ except ImportError:
     _mod = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
     _compute_indicators = _mod.compute_all
+    _compute_ema = _mod.compute_ema
 
 # Signal rules engine (SPEC F-06 / F-07)
 try:
@@ -181,6 +190,44 @@ def _init_schema(con):
             created_at  text not null
         )
     """)
+    # R3-5: signal_changes — tracks daily signal transitions (idempotent)
+    con.execute("""
+        create table if not exists signal_changes (
+            symbol      text not null,
+            date        text not null,
+            prev_signal text,
+            new_signal  text,
+            primary key (symbol, date)
+        )
+    """)
+    # R3-1: hitrate_cache — caches point-in-time reconstruction results (idempotent)
+    con.execute("""
+        create table if not exists hitrate_cache (
+            cache_key      text primary key,
+            max_price_date text not null,
+            cache_json     text not null,
+            computed_at    text not null
+        )
+    """)
+    # R3-3: analyst_estimates — price targets and EPS estimates (idempotent)
+    con.execute("""
+        create table if not exists analyst_estimates (
+            symbol                   text primary key,
+            target_mean              real,
+            target_median            real,
+            target_high              real,
+            target_low               real,
+            n_analysts               integer,
+            recommendation_key       text,
+            recommendation_mean      real,
+            eps_estimate_current_q   real,
+            eps_estimate_next_q      real,
+            eps_estimate_current_y   real,
+            up_revisions_30d         integer,
+            down_revisions_30d       integer,
+            updated_at               text not null
+        )
+    """)
     try:
         con.execute(
             "create index if not exists idx_scorecard_history_symbol "
@@ -282,6 +329,16 @@ class Handler(SimpleHTTPRequestHandler):
             return {"error": f"database not found: {DB_PATH}"}
         con = db()
         try:
+            # --- R3-2 Regime gauge ---
+            if path == "/api/regime":
+                return regime_payload(con)
+            # --- R3-1 Hit-rate ---
+            if path == "/api/hitrate":
+                return hitrate_payload(con)
+            # --- R3-5 Signal changes ---
+            if path == "/api/changes":
+                days = int((query.get("days") or [7])[0])
+                return changes_payload(con, days)
             if path == "/api/summary":
                 return summary(con)
             if path == "/api/feed":
@@ -304,6 +361,10 @@ class Handler(SimpleHTTPRequestHandler):
             if path.startswith("/api/news/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 return news_payload(con, symbol)
+            # --- R3-3 Analyst estimates ---
+            if path.startswith("/api/estimates/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                return estimates_payload(con, symbol)
             if path.startswith("/api/fundamentals/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 return fundamentals_payload(con, symbol)
@@ -1138,6 +1199,596 @@ def fundamentals_payload(con, symbol: str) -> dict:
         return base
 
 
+# ---------------------------------------------------------------------------
+# R3-2: Regime gauge helpers
+# ---------------------------------------------------------------------------
+
+def _last_non_none(series: list):
+    """Return the last non-None value in a series."""
+    for v in reversed(series):
+        if v is not None:
+            return v
+    return None
+
+
+def regime_payload(con) -> dict:
+    """
+    GET /api/regime
+
+    Computes market regime from SPY EMA50 and EMA200 stored in the prices table.
+
+    Regime rule:
+      bull:    SPY_close > EMA200  AND  EMA50 > EMA200
+      bear:    SPY_close < EMA200  AND  EMA50 < EMA200
+      neutral: mixed (one above, one below)
+      unknown: benchmark data missing or insufficient bars
+
+    Returns:
+      {"regime", "spy_close", "spy_ema50", "spy_ema200", "as_of", ["note"]}
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    base = {
+        "regime": "unknown",
+        "spy_close": None,
+        "spy_ema50": None,
+        "spy_ema200": None,
+        "as_of": as_of,
+        "note": "缺乏基準指數（SPY）資料，無法判斷市場環境。請先執行 `python scripts/ingest.py benchmarks` 更新資料。",
+    }
+
+    try:
+        bars = [dict(r) for r in con.execute(
+            "select date, open, high, low, close, volume from prices where symbol='SPY' order by date"
+        )]
+
+        if not bars:
+            return base
+
+        closes = [b["close"] for b in bars if b.get("close") is not None]
+
+        if len(closes) < 200:
+            return {
+                **base,
+                "spy_close": closes[-1] if closes else None,
+                "note": f"SPY 資料不足200根K棒（現有 {len(closes)}），無法計算 EMA200，無法判斷市場環境。",
+            }
+
+        if _compute_ema is None:
+            return {**base, "spy_close": closes[-1], "note": "指標模組載入失敗，無法計算 EMA。"}
+
+        ema50_series  = _compute_ema(closes, 50)
+        ema200_series = _compute_ema(closes, 200)
+
+        spy_close = closes[-1]
+        ema50     = _last_non_none(ema50_series)
+        ema200    = _last_non_none(ema200_series)
+
+        if ema50 is None or ema200 is None:
+            return {
+                **base,
+                "spy_close": spy_close,
+                "note": "EMA 計算失敗，無法判斷市場環境。",
+            }
+
+        if spy_close > ema200 and ema50 > ema200:
+            regime = "bull"
+        elif spy_close < ema200 and ema50 < ema200:
+            regime = "bear"
+        else:
+            regime = "neutral"
+
+        result = {
+            "regime": regime,
+            "spy_close": round(spy_close, 4),
+            "spy_ema50": round(ema50, 4),
+            "spy_ema200": round(ema200, 4),
+            "as_of": as_of,
+        }
+        return result
+
+    except Exception as exc:
+        print(f"[regime_payload] error: {exc}")
+        return base
+
+
+# ---------------------------------------------------------------------------
+# R3-1: Hit-rate API helpers
+# ---------------------------------------------------------------------------
+
+# Lock to prevent concurrent hitrate reconstruction
+_hitrate_lock = threading.Lock()
+
+
+def _compute_live_hitrate(con) -> dict:
+    """
+    Compute hit rates from live signal_history rows (accumulated since 2026-07-04).
+
+    A row is "matured" when a price 30 calendar days after its date is available.
+    hit definition:
+      BUY_TRIGGER / BUY_WATCH: hit = fwd_return > universe median on that date
+      EXIT_ALERT:              hit = fwd_return < universe median on that date
+      HOLD / NEUTRAL / OVERBOUGHT: excluded from hit counting (shown in summary only)
+
+    Returns the "live" section of the hitrate response.
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        rows = con.execute("""
+            select symbol, date, signal, close as entry_close
+            from signal_history
+            where symbol not in ('SPY', 'SOXX', 'QQQ')
+              and close is not null and close > 0
+            order by date
+        """).fetchall()
+    except Exception as exc:
+        print(f"[hitrate live] query failed: {exc}")
+        return {"label": "live (signal_history)", "rows": [], "n_total": 0, "as_of": as_of}
+
+    if not rows:
+        return {"label": "live (signal_history)", "rows": [], "n_total": 0, "as_of": as_of}
+
+    # Build per-date universe medians (lazy computed)
+    date_univ_med: dict = {}
+
+    def _get_univ_median(date_str: str):
+        if date_str in date_univ_med:
+            return date_univ_med[date_str]
+        try:
+            # For each signal_history row on this date, compute 30d forward return
+            sh_rows = con.execute("""
+                select symbol, close
+                from signal_history
+                where date=? and close is not null and close > 0
+                  and symbol not in ('SPY', 'SOXX', 'QQQ')
+            """, (date_str,)).fetchall()
+            rets = []
+            for sr in sh_rows:
+                sym, entry = sr[0], sr[1]
+                exit_row = con.execute("""
+                    select close from prices
+                    where symbol=? and date > ? and date <= date(?, '+30 days')
+                    order by date desc limit 1
+                """, (sym, date_str, date_str)).fetchone()
+                if exit_row and exit_row[0] and entry > 0:
+                    rets.append(exit_row[0] / entry - 1.0)
+            med = None
+            if rets:
+                srt = sorted(rets)
+                mid = len(srt) // 2
+                med = srt[mid] if len(srt) % 2 == 1 else (srt[mid - 1] + srt[mid]) / 2
+            date_univ_med[date_str] = med
+        except Exception:
+            date_univ_med[date_str] = None
+        return date_univ_med[date_str]
+
+    # Per-signal buckets
+    _EXCLUDED_SIGNALS = {"HOLD", "NEUTRAL", "OVERBOUGHT"}
+    from collections import defaultdict
+    buckets: dict = defaultdict(lambda: {"n": 0, "matured": 0, "hits": 0})
+    all_signals_seen: set = set()
+
+    for row in rows:
+        sym, date_str, sig, entry_close = row[0], row[1], row[2], row[3]
+        all_signals_seen.add(sig)
+
+        if sig in _EXCLUDED_SIGNALS:
+            continue
+
+        buckets[sig]["n"] += 1
+
+        # Find exit close
+        try:
+            exit_row = con.execute("""
+                select close from prices
+                where symbol=? and date > ? and date <= date(?, '+30 days')
+                order by date desc limit 1
+            """, (sym, date_str, date_str)).fetchone()
+        except Exception:
+            exit_row = None
+
+        exit_close = exit_row[0] if exit_row else None
+        if exit_close is None:
+            continue  # not yet matured
+
+        fwd_return = exit_close / entry_close - 1.0
+        univ_med = _get_univ_median(date_str)
+        if univ_med is None:
+            continue  # can't assess
+
+        buckets[sig]["matured"] += 1
+        if sig in ("BUY_TRIGGER", "BUY_WATCH"):
+            if fwd_return > univ_med:
+                buckets[sig]["hits"] += 1
+        elif sig == "EXIT_ALERT":
+            if fwd_return < univ_med:
+                buckets[sig]["hits"] += 1
+
+    summary_rows = []
+    for sig, b in buckets.items():
+        n_matured = b["matured"]
+        hits = b["hits"]
+        insufficient = n_matured < 10
+        win_rate = None if (insufficient or n_matured == 0) else round(hits / n_matured, 4)
+        summary_rows.append({
+            "signal":      sig,
+            "n":           b["n"],
+            "n_matured":   n_matured,
+            "hits":        hits if not insufficient else None,
+            "win_rate":    win_rate,
+            "insufficient": insufficient,
+        })
+
+    # Sort by signal name for deterministic output
+    summary_rows.sort(key=lambda x: x["signal"])
+
+    return {
+        "label":   "live (signal_history, 開始日期 2026-07-04)",
+        "rows":    summary_rows,
+        "n_total": len(rows),
+        "as_of":   as_of,
+    }
+
+
+def _compute_reconstructed_hitrate(con, db_path: Path) -> dict:
+    """
+    Reconstruct hit rates using the multiwindow point-in-time machinery.
+
+    Reuses backtest_multiwindow.py's evaluate_symbol_at_cutoff discipline:
+    - Bars truncated to <= cutoff before indicator computation (zero look-ahead)
+    - score_symbol called with now=cutoff
+    - Exit = last close within (cutoff, cutoff + 30 days]
+
+    Results are cached in hitrate_cache; invalidated when max price date advances.
+
+    hit definition (per spec):
+      BUY_TRIGGER / BUY_WATCH: fwd_return > universe median same window
+      EXIT_ALERT:              fwd_return < universe median same window
+      HOLD / NEUTRAL / OVERBOUGHT: excluded from hit counting
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    _EXCLUDED = {"HOLD", "NEUTRAL", "OVERBOUGHT"}
+    empty = {
+        "label": "reconstructed (point-in-time multiwindow)",
+        "cutoff_count": 0,
+        "total_obs": 0,
+        "rows": [],
+        "as_of": as_of,
+    }
+
+    # Current max price date (non-benchmark)
+    try:
+        row = con.execute(
+            "select max(date) from prices where symbol not in ('SPY','SOXX','QQQ')"
+        ).fetchone()
+        max_price_date = row[0] if row and row[0] else None
+    except Exception:
+        max_price_date = None
+
+    if not max_price_date:
+        return {**empty, "note": "No price data available for reconstruction."}
+
+    # Check cache
+    try:
+        cached = con.execute(
+            "select cache_json, max_price_date from hitrate_cache where cache_key='reconstructed'"
+        ).fetchone()
+        if cached and cached[1] == max_price_date:
+            try:
+                return json.loads(cached[0])
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Load multiwindow module (lazy, so server startup stays fast)
+    try:
+        import importlib.util as _mw_ilu
+        _mw_spec = _mw_ilu.spec_from_file_location(
+            "backtest_multiwindow",
+            Path(__file__).resolve().parent / "backtest_multiwindow.py",
+        )
+        _mw_mod = _mw_ilu.module_from_spec(_mw_spec)
+        _mw_spec.loader.exec_module(_mw_mod)
+    except Exception as exc:
+        print(f"[hitrate recon] Failed to load backtest_multiwindow: {exc}")
+        return {**empty, "note": f"Reconstruction unavailable: {exc}"}
+
+    try:
+        import sqlite3 as _sq3
+        _recon_con = _sq3.connect(str(db_path))
+        _recon_con.row_factory = _sq3.Row
+
+        # Load all prices, excluding benchmarks
+        all_rows = _recon_con.execute(
+            "SELECT symbol, date, open, high, low, close, volume "
+            "FROM prices "
+            "WHERE close IS NOT NULL AND close > 0 "
+            "  AND symbol NOT IN ('SPY', 'SOXX', 'QQQ') "
+            "ORDER BY symbol, date"
+        ).fetchall()
+        _recon_con.close()
+    except Exception as exc:
+        print(f"[hitrate recon] Failed to load prices: {exc}")
+        return {**empty, "note": f"Price load failed: {exc}"}
+
+    # Build all_prices dict
+    all_prices: dict = {}
+    for r in all_rows:
+        sym = r[0]
+        if sym not in all_prices:
+            all_prices[sym] = []
+        all_prices[sym].append({
+            "symbol": sym, "date": r[1],
+            "open": r[2], "high": r[3], "low": r[4],
+            "close": r[5], "volume": r[6],
+        })
+
+    if not all_prices:
+        return {**empty, "note": "No price data for reconstruction."}
+
+    # Enumerate cutoffs (every 7 days, matching spec)
+    try:
+        cutoffs = _mw_mod._enumerate_cutoffs(
+            all_prices, max_price_date,
+            step_days=7, min_symbols=10, min_bars=60, horizon_days=30,
+        )
+    except Exception as exc:
+        print(f"[hitrate recon] cutoff enumeration failed: {exc}")
+        cutoffs = []
+
+    if not cutoffs:
+        result = {**empty, "note": "Insufficient history to enumerate cutoffs (need ≥10 symbols with ≥60 bars)."}
+        return result
+
+    print(f"[hitrate recon] Running {len(cutoffs)} cutoffs (step=7d, horizon=30d)…")
+
+    # Per-signal accumulators
+    from collections import defaultdict
+    buckets: dict = defaultdict(lambda: {"n_total": 0, "returns": [], "hits": 0})
+    total_obs = 0
+
+    for cutoff_str in cutoffs:
+        try:
+            win = _mw_mod.run_window_fixed_horizon(
+                db_path, all_prices, cutoff_str, horizon_days=30, min_bars=60
+            )
+        except Exception as exc:
+            print(f"[hitrate recon] window {cutoff_str} failed: {exc}")
+            continue
+
+        records = win.get("records", [])
+        # Universe returns for this window
+        win_rets = [r["holdout_return"] for r in records if r.get("holdout_return") is not None]
+        if not win_rets:
+            continue
+        srt = sorted(win_rets)
+        mid = len(srt) // 2
+        univ_med = srt[mid] if len(srt) % 2 == 1 else (srt[mid - 1] + srt[mid]) / 2
+
+        for rec in records:
+            sig = rec.get("signal")
+            hret = rec.get("holdout_return")
+            if sig is None:
+                continue
+            if sig in _EXCLUDED:
+                continue
+            total_obs += 1
+            buckets[sig]["n_total"] += 1
+            if hret is not None:
+                buckets[sig]["returns"].append(hret)
+                if sig in ("BUY_TRIGGER", "BUY_WATCH") and hret > univ_med:
+                    buckets[sig]["hits"] += 1
+                elif sig == "EXIT_ALERT" and hret < univ_med:
+                    buckets[sig]["hits"] += 1
+
+    summary_rows = []
+    for sig, b in buckets.items():
+        n = len(b["returns"])
+        hits = b["hits"]
+        insufficient = n < 10
+        win_rate = None if (insufficient or n == 0) else round(hits / n, 4)
+        summary_rows.append({
+            "signal":      sig,
+            "n":           b["n_total"],
+            "n_with_exit": n,
+            "hits":        hits if not insufficient else None,
+            "win_rate":    win_rate,
+            "insufficient": insufficient,
+        })
+
+    summary_rows.sort(key=lambda x: x["signal"])
+
+    result = {
+        "label":        "reconstructed (point-in-time multiwindow)",
+        "cutoff_count": len(cutoffs),
+        "total_obs":    total_obs,
+        "rows":         summary_rows,
+        "as_of":        as_of,
+    }
+
+    # Cache result
+    try:
+        con.execute(
+            """insert into hitrate_cache(cache_key, max_price_date, cache_json, computed_at)
+               values ('reconstructed', ?, ?, ?)
+               on conflict(cache_key) do update set
+                   max_price_date=excluded.max_price_date,
+                   cache_json=excluded.cache_json,
+                   computed_at=excluded.computed_at""",
+            (max_price_date, json.dumps(result, ensure_ascii=False), datetime.now().isoformat()),
+        )
+        con.commit()
+        print(f"[hitrate recon] Cached reconstruction result ({len(cutoffs)} cutoffs, {total_obs} obs)")
+    except Exception as exc:
+        print(f"[hitrate recon] Cache write failed: {exc}")
+
+    return result
+
+
+def hitrate_payload(con) -> dict:
+    """
+    GET /api/hitrate
+
+    Returns hit-rate analysis from two honestly labeled sources:
+      "live":         signal_history rows (started 2026-07-04) with 30d forward
+      "reconstructed": point-in-time multiwindow reconstruction (cached)
+
+    Never 500s — degrades gracefully to empty rows.
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    try:
+        live = _compute_live_hitrate(con)
+    except Exception as exc:
+        print(f"[hitrate_payload] live source failed: {exc}")
+        live = {"label": "live (signal_history)", "rows": [], "n_total": 0, "as_of": as_of, "error": str(exc)}
+
+    with _hitrate_lock:
+        try:
+            recon = _compute_reconstructed_hitrate(con, DB_PATH)
+        except Exception as exc:
+            print(f"[hitrate_payload] reconstructed source failed: {exc}")
+            recon = {
+                "label": "reconstructed (point-in-time multiwindow)",
+                "cutoff_count": 0,
+                "total_obs": 0,
+                "rows": [],
+                "as_of": as_of,
+                "error": str(exc),
+            }
+
+    return {
+        "as_of": as_of,
+        "sources": {
+            "live":          live,
+            "reconstructed": recon,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# R3-3: Analyst estimates helpers
+# ---------------------------------------------------------------------------
+
+def estimates_payload(con, symbol: str) -> dict:
+    """
+    GET /api/estimates/<SYM>
+
+    Returns analyst estimates from the analyst_estimates table.
+    Derived field "revision_direction":
+      "up"     — 30d up-revisions > down-revisions
+      "down"   — down-revisions > up-revisions
+      "neutral"— equal (both non-zero or both zero)
+      null     — when up_revisions_30d or down_revisions_30d is NULL
+
+    Also returns "target_vs_price": (target_mean / latest_close - 1) when available.
+    Returns sane empty structure (all nulls) when table absent or symbol not found.
+    """
+    base: dict = {
+        "symbol":                  symbol,
+        "target_mean":             None,
+        "target_median":           None,
+        "target_high":             None,
+        "target_low":              None,
+        "n_analysts":              None,
+        "recommendation_key":      None,
+        "recommendation_mean":     None,
+        "eps_estimate_current_q":  None,
+        "eps_estimate_next_q":     None,
+        "eps_estimate_current_y":  None,
+        "up_revisions_30d":        None,
+        "down_revisions_30d":      None,
+        "revision_direction":      None,
+        "target_vs_price":         None,
+        "updated_at":              None,
+    }
+
+    if not _table_exists(con, "analyst_estimates"):
+        return base
+
+    try:
+        row = con.execute(
+            """select symbol, target_mean, target_median, target_high, target_low,
+                      n_analysts, recommendation_key, recommendation_mean,
+                      eps_estimate_current_q, eps_estimate_next_q, eps_estimate_current_y,
+                      up_revisions_30d, down_revisions_30d, updated_at
+               from analyst_estimates where symbol=?""",
+            (symbol,),
+        ).fetchone()
+
+        if not row:
+            return base
+
+        result = dict(row)
+
+        # Derive revision_direction
+        up = result.get("up_revisions_30d")
+        down = result.get("down_revisions_30d")
+        if up is not None and down is not None:
+            if up > down:
+                result["revision_direction"] = "up"
+            elif down > up:
+                result["revision_direction"] = "down"
+            else:
+                result["revision_direction"] = "neutral"
+        else:
+            result["revision_direction"] = None
+
+        # Derive target_vs_price
+        target_mean = result.get("target_mean")
+        if target_mean is not None:
+            try:
+                price_row = con.execute(
+                    "select close from prices where symbol=? order by date desc limit 1", (symbol,)
+                ).fetchone()
+                if price_row and price_row[0] and price_row[0] > 0:
+                    result["target_vs_price"] = round(target_mean / price_row[0] - 1.0, 4)
+            except Exception:
+                pass
+
+        return result
+
+    except Exception as exc:
+        print(f"[estimates_payload] {symbol}: {exc}")
+        return base
+
+
+# ---------------------------------------------------------------------------
+# R3-5: Signal changes helpers
+# ---------------------------------------------------------------------------
+
+def changes_payload(con, days: int = 7) -> dict:
+    """
+    GET /api/changes?days=N
+
+    Returns signal transitions from signal_changes table, newest first.
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    empty = {"days": days, "items": [], "as_of": as_of}
+
+    try:
+        if not _table_exists(con, "signal_changes"):
+            return empty
+
+        rows = con.execute(
+            """select symbol, date, prev_signal, new_signal
+               from signal_changes
+               where date >= date('now', ? || ' days')
+               order by date desc, symbol""",
+            (f"-{days}",),
+        ).fetchall()
+
+        return {
+            "days":  days,
+            "items": [dict(r) for r in rows],
+            "as_of": as_of,
+        }
+
+    except Exception as exc:
+        print(f"[changes_payload] error: {exc}")
+        return {**empty, "error": str(exc)}
+
+
 _RELIABILITY_NOTE = (
     "Multi-window out-of-sample validation (21 cutoffs, fixed 30-day horizon, "
     "1541 observations) found: BUY_WATCH UNDERPERFORMS the universe (-4.8pp, "
@@ -1393,11 +2044,35 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
     except Exception as exc:
         print(f"[Dossier] news fetch failed for {symbol}: {exc}")
 
+    # --- 9d. Regime section (R3-2) ---
+    regime_section = None
+    try:
+        regime_section = regime_payload(con)
+    except Exception as exc:
+        print(f"[Dossier] regime fetch failed: {exc}")
+
+    # --- 9e. Analyst estimates section (R3-3) ---
+    estimates_section = None
+    try:
+        estimates_section = estimates_payload(con, symbol)
+        # Only include if at least one non-null field exists (besides symbol/updated_at)
+        _est_vals = [
+            estimates_section.get(k) for k in (
+                "target_mean", "n_analysts", "recommendation_key",
+                "eps_estimate_current_q", "revision_direction"
+            )
+        ]
+        if not any(v is not None for v in _est_vals):
+            estimates_section = None
+    except Exception as exc:
+        print(f"[Dossier] estimates fetch failed for {symbol}: {exc}")
+
     # --- 10. Build Gemini prompt and call for manager_view ---
     manager_view = None
     api_key = os.environ.get("GEMINI_API_KEY")
     if api_key:
         try:
+            current_regime = (regime_section or {}).get("regime", "unknown")
             prompt_data = {
                 "symbol": symbol,
                 "as_of": as_of,
@@ -1421,7 +2096,36 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
                 "recent_macro_news_titles": [
                     n["title"] for n in news_section["macro"]
                 ],
+                # R3-2: regime context
+                "market_regime": current_regime,
+                "regime_data": {
+                    "spy_close": (regime_section or {}).get("spy_close"),
+                    "spy_ema50": (regime_section or {}).get("spy_ema50"),
+                    "spy_ema200": (regime_section or {}).get("spy_ema200"),
+                } if regime_section else None,
+                # R3-3: analyst estimates
+                "analyst_estimates": {
+                    k: estimates_section.get(k)
+                    for k in (
+                        "target_mean", "target_median", "n_analysts",
+                        "recommendation_key", "recommendation_mean",
+                        "eps_estimate_current_q", "eps_estimate_next_y",
+                        "up_revisions_30d", "down_revisions_30d",
+                        "revision_direction", "target_vs_price",
+                    )
+                } if estimates_section else None,
             }
+
+            # Bear-regime prompt instruction (zh-TW, injected into system prompt)
+            _bear_warning = ""
+            if current_regime == "bear":
+                _bear_warning = (
+                    "\n\n【熊市警告 — 必須執行】目前 SPY 市場環境判斷為「熊市（bear）」："
+                    "SPY 收盤價與 EMA50 均低於 EMA200。在此環境下，你必須："
+                    "（1）將 conviction 調降至 LOW 或最多 MEDIUM（除非有壓倒性多頭證據）；"
+                    "（2）在 bear_case 與 position_guidance 中明確加入動能下行風險警語（以繁體中文撰寫）；"
+                    "（3）recommendation 不得輸出 ACCUMULATE，優先考慮 WATCH 或 AVOID。"
+                )
 
             system_instruction = (
                 "You are a senior quantitative investment analyst generating a structured manager-view dossier. "
@@ -1436,6 +2140,7 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
                 "recommendation (one of: AVOID, WATCH, ACCUMULATE, HOLD, REDUCE), "
                 "position_guidance (string — ATR-based, anchored to latest close from the payload).\n"
                 "5. Write in English. Be concise. Do not invent facts."
+                + _bear_warning
             )
 
             user_text = (
@@ -1478,6 +2183,8 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
         "evidence": evidence_section,
         "fundamentals": fundamentals_section,
         "news": news_section,
+        "regime": regime_section,
+        "estimates": estimates_section,
         "manager_view": manager_view,
         "reliability_note": _RELIABILITY_NOTE,
     }
@@ -1501,11 +2208,16 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
 
 def snapshot_signals():
     """
-    R-5: Upsert today's signal row for every symbol that has price data.
+    R-5 / R3-5: Upsert today's signal row for every symbol that has price data.
 
     Idempotent — running twice on the same day overwrites the row with
     identical data, leaving the table consistent.  Reuses signal_payload
     so all computation is DRY.
+
+    Also writes to signal_changes when the signal transitions from the most
+    recent prior snapshot (R3-5).
+
+    Benchmark symbols (SPY/SOXX/QQQ) are excluded from universe snapshots.
     """
     today = datetime.now().strftime("%Y-%m-%d")
     con = db()
@@ -1514,8 +2226,10 @@ def snapshot_signals():
             r[0] for r in con.execute(
                 "select distinct symbol from prices"
             ).fetchall()
+            if r[0] not in BENCHMARK_SYMBOLS
         ]
         inserted = 0
+        changes_written = 0
         for sym in symbols:
             try:
                 sp = signal_payload(con, sym)
@@ -1540,6 +2254,29 @@ def snapshot_signals():
                 if bars:
                     latest_close = bars[0]
 
+                new_signal = sp.get("signal")
+
+                # R3-5: detect signal change vs most recent prior snapshot
+                try:
+                    prior_row = con.execute(
+                        "select signal from signal_history where symbol=? and date<? order by date desc limit 1",
+                        (sym, today),
+                    ).fetchone()
+                    if prior_row is not None:
+                        prev_signal = prior_row[0]
+                        if prev_signal != new_signal:
+                            con.execute(
+                                """insert into signal_changes(symbol, date, prev_signal, new_signal)
+                                   values (?, ?, ?, ?)
+                                   on conflict(symbol, date) do update set
+                                       prev_signal=excluded.prev_signal,
+                                       new_signal=excluded.new_signal""",
+                                (sym, today, prev_signal, new_signal),
+                            )
+                            changes_written += 1
+                except Exception as chg_exc:
+                    print(f"[Snapshot] signal_changes write failed for {sym}: {chg_exc}")
+
                 con.execute(
                     """insert into signal_history
                            (symbol, date, signal, score, score_source, close, rsi, atr14)
@@ -1554,7 +2291,7 @@ def snapshot_signals():
                     (
                         sym,
                         today,
-                        sp.get("signal"),
+                        new_signal,
                         sp.get("score"),
                         sp.get("score_source"),
                         latest_close,
@@ -1566,7 +2303,8 @@ def snapshot_signals():
             except Exception as exc:
                 print(f"[Snapshot] {sym} failed: {exc}")
         con.commit()
-        print(f"[Snapshot] signal_history upserted {inserted} rows for {today}.")
+        print(f"[Snapshot] signal_history upserted {inserted} rows for {today}; "
+              f"{changes_written} signal changes recorded.")
         return inserted
     finally:
         con.close()
