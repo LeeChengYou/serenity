@@ -4,6 +4,8 @@ import json
 import sqlite3
 import os
 import re
+import hashlib
+import urllib.error
 import urllib.request
 import time
 import threading
@@ -91,31 +93,180 @@ except ImportError:
 _server_start_time = time.time()
 _schema_initialized = False
 
+# ---------------------------------------------------------------------------
+# R4-1: KeyManager — multi-key Gemini API pool with 429 failover
+# ---------------------------------------------------------------------------
+
+class KeyManager:
+    """
+    Thread-safe Gemini API key pool.
+
+    Task affinity:
+      interactive → KEY_1   (chat, dossier)
+      batch       → KEY_2   (scorecard generation)
+      translate   → KEY_3   (translation)
+      memory      → KEY_1   (memory extraction, lite model)
+    Overflow: KEY_4 used when affinity key is 429-cooling.
+    Cooling:  first 429 → 60 s; 3rd 429 within 10 min → until next Pacific midnight.
+    """
+    _AFFINITY = {
+        "interactive": "KEY_1",
+        "batch":       "KEY_2",
+        "translate":   "KEY_3",
+        "memory":      "KEY_1",
+    }
+    _OVERFLOW = "KEY_4"
+    _ALL_LABELS = ["KEY_1", "KEY_2", "KEY_3", "KEY_4"]
+    _ENV_NAMES  = ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"]
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries: dict = {}
+        for label, env_name in zip(self._ALL_LABELS, self._ENV_NAMES):
+            val = os.environ.get(env_name)
+            if val:
+                self._entries[label] = {
+                    "label":            label,
+                    "key":              val,
+                    "cooling_until":    None,   # Unix timestamp or None
+                    "calls_today":      0,
+                    "errors_429_today": 0,
+                    "recent_429s":      [],     # timestamps within 10 min
+                }
+
+    def has_any_key(self) -> bool:
+        return bool(self._entries)
+
+    def _ordered_labels(self, task_class: str) -> list:
+        """Preferred label order: affinity → KEY_4 overflow → remaining."""
+        affinity = self._AFFINITY.get(task_class, "KEY_1")
+        order = [affinity]
+        if self._OVERFLOW not in order:
+            order.append(self._OVERFLOW)
+        for label in self._ALL_LABELS:
+            if label not in order:
+                order.append(label)
+        return [lbl for lbl in order if lbl in self._entries]
+
+    def pick_key(self, task_class: str = "interactive", exclude: set = None) -> dict:
+        """Return the best available (non-cooling, non-excluded) key entry."""
+        exclude = exclude or set()
+        with self._lock:
+            now = time.time()
+            for label in self._ordered_labels(task_class):
+                if label in exclude:
+                    continue
+                entry = self._entries[label]
+                cool = entry["cooling_until"]
+                if cool is None or now >= cool:
+                    return entry
+            raise ValueError("所有 Gemini API Key 目前均在冷卻中，請稍後再試。")
+
+    def mark_429(self, entry: dict) -> None:
+        """Record a 429 and update cooling state for the given entry."""
+        with self._lock:
+            now = time.time()
+            entry["errors_429_today"] += 1
+            entry["recent_429s"].append(now)
+            # Prune older than 10 min
+            entry["recent_429s"] = [t for t in entry["recent_429s"] if now - t <= 600]
+            if len(entry["recent_429s"]) >= 3:
+                cool_ts = self._next_pacific_midnight()
+                entry["cooling_until"] = cool_ts
+                print(f"[KeyManager] {entry['label']}: 3 429s in 10 min → cooling until Pacific midnight")
+            else:
+                entry["cooling_until"] = now + 60
+                print(f"[KeyManager] {entry['label']}: 429 → cooling 60 s")
+
+    def record_call(self, entry: dict) -> None:
+        with self._lock:
+            entry["calls_today"] += 1
+
+    def _next_pacific_midnight(self) -> float:
+        """Unix timestamp of next midnight in US/Pacific time."""
+        from datetime import timedelta
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("US/Pacific")
+            now_pac = datetime.now(tz)
+            midnight = (now_pac + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            return midnight.timestamp()
+        except Exception:
+            # Fallback: approximate PDT = UTC-7
+            now_utc = datetime.utcnow()
+            pac_now = now_utc - timedelta(hours=7)
+            midnight = (pac_now + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            return time.time() + (midnight - pac_now).total_seconds()
+
+    def status(self) -> list:
+        """Return masked status for /api/keypool (last-4 suffix only, never full key)."""
+        with self._lock:
+            now = time.time()
+            result = []
+            for label in self._ALL_LABELS:
+                if label not in self._entries:
+                    continue
+                entry = self._entries[label]
+                cool = entry["cooling_until"]
+                available = cool is None or now >= cool
+                cooling_iso = None
+                if cool and not available:
+                    try:
+                        cooling_iso = datetime.fromtimestamp(cool).isoformat()
+                    except Exception:
+                        pass
+                result.append({
+                    "label":            label,
+                    "suffix":           f"...{entry['key'][-4:]}",
+                    "available":        available,
+                    "cooling_until":    cooling_iso,
+                    "calls_today":      entry["calls_today"],
+                    "errors_429_today": entry["errors_429_today"],
+                })
+            return result
+
+
+_key_manager = KeyManager()
+
+
 def call_gemini(model_name: str, contents: list, system_instruction: str,
-                temperature: float = 0.3, response_mime_type: str = None) -> dict:
-    """Unified Gemini API call helper. Passes key via HTTP header x-goog-api-key."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set in environment.")
+                temperature: float = 0.3, response_mime_type: str = None,
+                task_class: str = "interactive") -> dict:
+    """Unified Gemini API call with KeyManager 429 failover routing."""
+    if not _key_manager.has_any_key():
+        raise ValueError("尚未設定 Gemini API Key，無法呼叫 AI 服務。")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
     req_payload = {
         "contents": contents,
         "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "generationConfig": {"temperature": temperature}
+        "generationConfig": {"temperature": temperature},
     }
     if response_mime_type:
         req_payload["generationConfig"]["responseMimeType"] = response_mime_type
-        
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(req_payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key
-        }
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+
+    tried: set = set()
+    while True:
+        key_entry = _key_manager.pick_key(task_class, exclude=tried)
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(req_payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": key_entry["key"],
+            },
+        )
+        _key_manager.record_call(key_entry)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                _key_manager.mark_429(key_entry)
+                tried.add(key_entry["label"])
+                continue  # retry with next key
+            raise
 
 def db():
     global _schema_initialized
@@ -235,6 +386,16 @@ def _init_schema(con):
         )
     except Exception:
         pass
+    # R4-2: translation cache (idempotent)
+    con.execute("""
+        create table if not exists translations (
+            src_hash       text primary key,
+            src_text       text not null,
+            translated_text text not null,
+            model          text,
+            created_at     text not null
+        )
+    """)
     for idx_name, tbl_name, col in [
         ("idx_mentions_symbol", "mentions", "symbol"),
         ("idx_prices_symbol_date", "prices", "symbol, date"),
@@ -325,6 +486,12 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             return {"logs": logs}
+        # R4-1: key pool status (no DB needed; suffixes only — never full key values)
+        if path == "/api/keypool":
+            return {
+                "keys": _key_manager.status(),
+                "as_of": datetime.now().isoformat(),
+            }
         if not DB_PATH.exists():
             return {"error": f"database not found: {DB_PATH}"}
         con = db()
@@ -410,6 +577,9 @@ class Handler(SimpleHTTPRequestHandler):
     def route_post_api(self, path, payload):
         if path == "/api/chat":
             return handle_chat_api(payload)
+        # R4-2: translation endpoint
+        if path == "/api/translate":
+            return handle_translate_api(payload)
         if path == "/api/memory/clear":
             con = db()
             try:
@@ -475,7 +645,8 @@ class Handler(SimpleHTTPRequestHandler):
                     contents=[{"role": "user", "parts": [{"text": f"請對個股 {symbol} 進行定性供應鏈瓶頸分析。本機資料庫相關貼文如下：\n{tweets_text}"}]}],
                     system_instruction=system_prompt,
                     temperature=0.3,
-                    response_mime_type="application/json"
+                    response_mime_type="application/json",
+                    task_class="batch",
                 )
                 
                 reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -756,22 +927,22 @@ def handle_chat_api(payload):
     )
     
     # 3. Call LLM or fallback
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key:
+    if _key_manager.has_any_key():
         try:
             model_name = payload.get("model") or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-            
+
             contents = []
             for msg in messages:
                 role = 'user' if msg.get('role') == 'user' else 'model'
                 contents.append({"role": role, "parts": [{"text": msg.get('content', '')}]})
-                
+
             start_time = time.time()
             res_data = call_gemini(
                 model_name=model_name,
                 contents=contents,
                 system_instruction=system_instruction,
-                temperature=0.3
+                temperature=0.3,
+                task_class="interactive",
             )
             
             reply = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -830,9 +1001,168 @@ def consolidate_memory_in_background(messages, ai_reply):
     t.start()
 
 
+# ---------------------------------------------------------------------------
+# R4-2: Translation API handler
+# ---------------------------------------------------------------------------
+
+def handle_translate_api(payload: dict) -> dict:
+    """
+    POST /api/translate
+    Request:  {"texts": [...]}   max 20 items
+    Response: {"translations": [...], "cached": [...], "error": null | "zh-TW msg"}
+
+    Cache-first: cached texts are NEVER re-sent to Gemini.
+    Single Gemini call for all uncached texts (task_class="translate").
+    """
+    texts = payload.get("texts")
+    if not texts or not isinstance(texts, list):
+        return {
+            "translations": [],
+            "cached": [],
+            "error": "請提供 texts 欄位（字串陣列），且不可為空。",
+        }
+    if len(texts) > 20:
+        return {
+            "translations": [],
+            "cached": [],
+            "error": f"每次最多翻譯 20 條文本（收到 {len(texts)} 條）。",
+        }
+
+    n = len(texts)
+    results: list = [None] * n
+    cached_flags: list = [False] * n
+    uncached_indices: list = []
+
+    # --- 1. Cache lookup ---
+    con = None
+    try:
+        if DB_PATH.exists():
+            con = db()
+            for i, text in enumerate(texts):
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                row = con.execute(
+                    "select translated_text from translations where src_hash=?", (h,)
+                ).fetchone()
+                if row:
+                    results[i] = row[0]
+                    cached_flags[i] = True
+                else:
+                    uncached_indices.append(i)
+        else:
+            uncached_indices = [i for i, t in enumerate(texts) if isinstance(t, str) and t.strip()]
+    except Exception as exc:
+        print(f"[translate] cache lookup error: {exc}")
+        uncached_indices = [i for i, t in enumerate(texts) if isinstance(t, str) and t.strip()]
+    finally:
+        if con:
+            con.close()
+
+    # All cached → return immediately
+    if not uncached_indices:
+        return {"translations": results, "cached": cached_flags, "error": None}
+
+    # --- 2. No key → return cached results with error for uncached slots ---
+    if not _key_manager.has_any_key():
+        return {
+            "translations": results,
+            "cached": cached_flags,
+            "error": "尚未設定 Gemini API Key，無法執行翻譯。",
+        }
+
+    # --- 3. Single Gemini call for all uncached texts ---
+    uncached_texts = [texts[i] for i in uncached_indices]
+    translate_model = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-2.5-flash-lite")
+
+    system_prompt = (
+        "你是一個專業的財經新聞翻譯員。請將使用者提供的英文文本翻譯成台灣繁體中文。\n"
+        "嚴格規則：\n"
+        "1. 股票代號（如 NVDA、TSM、AAPL、AMD）、數字、百分比、金額保留原文不翻譯。\n"
+        "2. 公司名稱使用台灣通用中文譯名（如 Apple=蘋果、Nvidia=輝達），無通用譯名則保留英文。\n"
+        "3. 只回傳一個 JSON 陣列，陣列長度與輸入相同，不加任何說明、前綴、後綴或其他文字。\n"
+        "4. 若某條文本無法翻譯，該位置填入原文字串。"
+    )
+    user_text = (
+        f"請翻譯以下 {len(uncached_texts)} 條文本。"
+        f"回傳 JSON 陣列，長度必須恰好為 {len(uncached_texts)}：\n"
+        + json.dumps(uncached_texts, ensure_ascii=False)
+    )
+
+    error_msg = None
+    try:
+        res_data = call_gemini(
+            model_name=translate_model,
+            contents=[{"role": "user", "parts": [{"text": user_text}]}],
+            system_instruction=system_prompt,
+            temperature=0.1,
+            response_mime_type="application/json",
+            task_class="translate",
+        )
+        reply_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+        translations = json.loads(reply_text)
+
+        if not isinstance(translations, list):
+            error_msg = "翻譯 API 回傳格式錯誤（非 JSON 陣列），部分結果未翻譯。"
+            translations = [None] * len(uncached_texts)
+        elif len(translations) != len(uncached_texts):
+            error_msg = (
+                f"翻譯 API 回傳長度不符（預期 {len(uncached_texts)}，"
+                f"實際 {len(translations)}），部分結果未翻譯。"
+            )
+            # Pad or truncate to match
+            while len(translations) < len(uncached_texts):
+                translations.append(None)
+            translations = translations[: len(uncached_texts)]
+
+        # Fill results and cache successful translations
+        now_str = datetime.now().isoformat()
+        con2 = None
+        try:
+            if DB_PATH.exists():
+                con2 = db()
+        except Exception:
+            con2 = None
+
+        for idx_in_batch, orig_idx in enumerate(uncached_indices):
+            trans = translations[idx_in_batch]
+            if trans and isinstance(trans, str):
+                results[orig_idx] = trans
+                # Cache
+                if con2 is not None:
+                    try:
+                        src_text = texts[orig_idx]
+                        h = hashlib.sha256(src_text.encode("utf-8")).hexdigest()
+                        con2.execute(
+                            """insert into translations
+                               (src_hash, src_text, translated_text, model, created_at)
+                               values (?, ?, ?, ?, ?)
+                               on conflict(src_hash) do nothing""",
+                            (h, src_text, trans, translate_model, now_str),
+                        )
+                    except Exception as cache_exc:
+                        print(f"[translate] cache write error: {cache_exc}")
+
+        if con2 is not None:
+            try:
+                con2.commit()
+            except Exception:
+                pass
+            finally:
+                con2.close()
+
+    except Exception as exc:
+        safe = str(exc)
+        # Mask any accidental key leakage
+        if any(k in safe.lower() for k in ("key=", "api_key", "goog-api-key")):
+            safe = "AI 服務請求錯誤（憑證資訊已遮蔽）"
+        error_msg = f"翻譯暫時不可用：{safe[:120]}"
+
+    return {"translations": results, "cached": cached_flags, "error": error_msg}
+
+
 def extract_memory_task(messages, ai_reply):
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
+    if not _key_manager.has_any_key():
         return
         
     history_text = ""
@@ -859,7 +1189,8 @@ def extract_memory_task(messages, ai_reply):
             contents=[{"role": "user", "parts": [{"text": f"請從以下對話中提煉長期記憶：\n{history_text}"}]}],
             system_instruction=system_prompt,
             temperature=0.2,
-            response_mime_type="application/json"
+            response_mime_type="application/json",
+            task_class="memory",
         )
         reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
         memories = json.loads(reply_text)
@@ -2167,8 +2498,7 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
 
     # --- 10. Build Gemini prompt and call for manager_view ---
     manager_view = None
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key:
+    if _key_manager.has_any_key():
         try:
             current_regime = (regime_section or {}).get("regime", "unknown")
             prompt_data = {
@@ -2254,6 +2584,7 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
                 system_instruction=system_instruction,
                 temperature=0.25,
                 response_mime_type="application/json",
+                task_class="interactive",
             )
             reply_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
             mv = json.loads(reply_text)
