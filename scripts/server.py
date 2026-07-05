@@ -301,6 +301,12 @@ class Handler(SimpleHTTPRequestHandler):
                     (symbol,),
                 )]
                 return {"symbol": symbol, "history": rows}
+            if path.startswith("/api/news/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                return news_payload(con, symbol)
+            if path.startswith("/api/fundamentals/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                return fundamentals_payload(con, symbol)
             if path.startswith("/api/dossier/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 refresh = (query.get("refresh") or ["0"])[0] == "1"
@@ -1024,6 +1030,114 @@ def signal_payload(con, symbol: str) -> dict:
     return result
 
 
+def _table_exists(con, table_name: str) -> bool:
+    """Return True if the named table exists in the database."""
+    row = con.execute(
+        "select 1 from sqlite_master where type='table' and name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def news_payload(con, symbol: str) -> dict:
+    """
+    GET /api/news/<SYM>
+    Returns up to 20 symbol-scoped items (newest first) and up to 10 macro items.
+    Returns sane empty structure when the news table is absent or empty.
+    Contract (REQUIREMENTS_V2.md §三):
+      {"symbol", "items":[{title,source,url,published_at,scope,summary},...],
+       "macro":[...same shape...], "as_of"}
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    empty = {"symbol": symbol, "items": [], "macro": [], "as_of": as_of}
+
+    if not _table_exists(con, "news"):
+        return empty
+
+    def _row_to_item(r):
+        return {
+            "title": r["title"],
+            "source": r["source"],
+            "url": r["url"],
+            "published_at": r["published_at"],
+            "scope": r["scope"],
+            "summary": r["summary"],
+        }
+
+    try:
+        # Symbol-scoped: articles whose symbols JSON contains this symbol
+        sym_rows = con.execute(
+            """select title, source, url, published_at, scope, summary
+               from news
+               where scope='symbol'
+                 and (symbols like ? or symbols like ? or symbols like ? or symbols like ?)
+               order by published_at desc
+               limit 20""",
+            (
+                f'["{symbol}"]',          # exact single-element array
+                f'"{symbol}",%',          # first element
+                f'%,"{symbol}",%',        # middle element
+                f'%,"{symbol}"]',         # last element
+            ),
+        ).fetchall()
+        items = [_row_to_item(r) for r in sym_rows]
+
+        # Macro: any scope='macro' news, newest first, max 10
+        macro_rows = con.execute(
+            """select title, source, url, published_at, scope, summary
+               from news
+               where scope='macro'
+               order by published_at desc
+               limit 10""",
+        ).fetchall()
+        macro = [_row_to_item(r) for r in macro_rows]
+
+        return {"symbol": symbol, "items": items, "macro": macro, "as_of": as_of}
+
+    except Exception as exc:
+        print(f"[news_payload] {symbol}: {exc}")
+        return empty
+
+
+def fundamentals_payload(con, symbol: str) -> dict:
+    """
+    GET /api/fundamentals/<SYM>
+    Returns one row from fundamentals table, all contract fields, nulls where absent.
+    Contract (REQUIREMENTS_V2.md §三):
+      {"symbol","pe","forward_pe","eps_ttm","revenue_growth_yoy",
+       "gross_margin","market_cap","next_earnings_date","updated_at"}
+    Returns sane empty structure (all nulls) when table is absent or symbol not found.
+    """
+    base = {
+        "symbol": symbol,
+        "pe": None,
+        "forward_pe": None,
+        "eps_ttm": None,
+        "revenue_growth_yoy": None,
+        "gross_margin": None,
+        "market_cap": None,
+        "next_earnings_date": None,
+        "updated_at": None,
+    }
+
+    if not _table_exists(con, "fundamentals"):
+        return base
+
+    try:
+        row = con.execute(
+            """select symbol, pe, forward_pe, eps_ttm, revenue_growth_yoy,
+                      gross_margin, market_cap, next_earnings_date, updated_at
+               from fundamentals where symbol=?""",
+            (symbol,),
+        ).fetchone()
+        if row:
+            return dict(row)
+        return base
+    except Exception as exc:
+        print(f"[fundamentals_payload] {symbol}: {exc}")
+        return base
+
+
 _RELIABILITY_NOTE = (
     "Multi-window out-of-sample validation (21 cutoffs, fixed 30-day horizon, "
     "1541 observations) found: BUY_WATCH UNDERPERFORMS the universe (-4.8pp, "
@@ -1231,6 +1345,54 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
         for r in evidence_rows
     ]
 
+    # --- 9b. Fundamentals section (R2-4) ---
+    fundamentals_section = None
+    try:
+        if _table_exists(con, "fundamentals"):
+            frow = con.execute(
+                """select pe, forward_pe, eps_ttm, revenue_growth_yoy,
+                          gross_margin, market_cap, next_earnings_date, updated_at
+                   from fundamentals where symbol=?""",
+                (symbol,),
+            ).fetchone()
+            if frow:
+                fundamentals_section = dict(frow)
+    except Exception as exc:
+        print(f"[Dossier] fundamentals fetch failed for {symbol}: {exc}")
+
+    # --- 9c. News section (R2-4) ---
+    news_section = {"items": [], "macro": []}
+    try:
+        if _table_exists(con, "news"):
+            sym_rows = con.execute(
+                """select title, source, url, published_at, summary
+                   from news
+                   where scope='symbol'
+                     and (symbols like ? or symbols like ? or symbols like ? or symbols like ?)
+                     and published_at >= datetime('now', '-7 days')
+                   order by published_at desc
+                   limit 10""",
+                (
+                    f'["{symbol}"]',
+                    f'"{symbol}",%',
+                    f'%,"{symbol}",%',
+                    f'%,"{symbol}"]',
+                ),
+            ).fetchall()
+            news_section["items"] = [dict(r) for r in sym_rows]
+
+            macro_rows = con.execute(
+                """select title, source, url, published_at, summary
+                   from news
+                   where scope='macro'
+                     and published_at >= datetime('now', '-3 days')
+                   order by published_at desc
+                   limit 5""",
+            ).fetchall()
+            news_section["macro"] = [dict(r) for r in macro_rows]
+    except Exception as exc:
+        print(f"[Dossier] news fetch failed for {symbol}: {exc}")
+
     # --- 10. Build Gemini prompt and call for manager_view ---
     manager_view = None
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -1252,6 +1414,13 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
                 "sentiment": sentiment_section,
                 "scorecard": scorecard_section,
                 "top_evidence_snippets": [e["text"][:200] for e in evidence_section],
+                "fundamentals": fundamentals_section,
+                "recent_symbol_news_titles": [
+                    n["title"] for n in news_section["items"]
+                ],
+                "recent_macro_news_titles": [
+                    n["title"] for n in news_section["macro"]
+                ],
             }
 
             system_instruction = (
@@ -1307,6 +1476,8 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
         "sentiment": sentiment_section,
         "scorecard": scorecard_section,
         "evidence": evidence_section,
+        "fundamentals": fundamentals_section,
+        "news": news_section,
         "manager_view": manager_view,
         "reliability_note": _RELIABILITY_NOTE,
     }

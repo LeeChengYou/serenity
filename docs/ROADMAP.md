@@ -18,6 +18,8 @@
 | J-2 訊號快照 | `python scripts/server.py --snapshot-once` | 每日 06:40（J-1 之後） | 79 檔訊號落地 `signal_history`，累積命中率樣本 |
 | J-3 StockTwits 情緒 | `python scripts/ingest.py stocktwits` | 每日 06:50 | 群眾情緒更新（免費 API，404 自動跳過） |
 | J-4 X 貼文抓取 | `python scripts/ingest.py fetch-x` | 每週手動 | **需先更新 `x_curl/` 的 cookie**（見注意事項） |
+| **J-5 新聞抓取** | `python scripts/ingest.py news` | 每日 07:00 | Google News RSS（個股）+ CNBC/CNN/Google News（宏觀）；冪等 url 去重 |
+| **J-6 基本面更新** | `python scripts/ingest.py fundamentals` | 每週一 07:10 | Yahoo quoteSummary P/E、營收、市值等；Yahoo 封鎖時自動降級 yfinance |
 
 ### Windows 工作排程器註冊指令（由使用者執行）
 
@@ -30,6 +32,8 @@ $repo = "C:\Users\Jeff\OneDrive\桌面\git_repo\serenity"
 schtasks /Create /TN "Serenity\J1-prices"     /TR "$py $repo\scripts\ingest.py prices"          /SC DAILY /ST 06:30 /F
 schtasks /Create /TN "Serenity\J2-snapshot"   /TR "$py $repo\scripts\server.py --snapshot-once" /SC DAILY /ST 06:40 /F
 schtasks /Create /TN "Serenity\J3-stocktwits" /TR "$py $repo\scripts\ingest.py stocktwits"      /SC DAILY /ST 06:50 /F
+schtasks /Create /TN "Serenity\J5-news"        /TR "$py $repo\scripts\ingest.py news"            /SC DAILY /ST 07:00 /F
+schtasks /Create /TN "Serenity\J6-fundamentals" /TR "$py $repo\scripts\ingest.py fundamentals"  /SC WEEKLY /D MON /ST 07:10 /F
 ```
 
 ### 注意事項
