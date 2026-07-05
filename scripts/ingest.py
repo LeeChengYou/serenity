@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +96,8 @@ def connect():
     )
     migrate_prices_ohlc(con)
     migrate_news_sentiment(con)
+    migrate_news(con)
+    migrate_fundamentals(con)
     return con
 
 
@@ -134,6 +137,56 @@ def migrate_news_sentiment(con):
     con.execute("""
         create index if not exists idx_news_sentiment_symbol
             on news_sentiment(symbol, published_at)
+    """)
+    con.commit()
+
+
+def migrate_news(con):
+    """
+    Idempotent migration: create news table (R2-3).
+    url is the unique key — re-runs skip existing rows.
+    scope: 'symbol' | 'macro'
+    symbols: JSON array of tickers associated with this article (may be empty for macro)
+    """
+    con.execute("""
+        create table if not exists news (
+            id           integer primary key autoincrement,
+            title        text not null,
+            source       text,
+            url          text unique not null,
+            published_at text,
+            scope        text not null default 'macro',
+            symbols      text,
+            summary      text,
+            fetched_at   text not null
+        )
+    """)
+    con.execute("""
+        create index if not exists idx_news_published_at on news(published_at desc)
+    """)
+    con.execute("""
+        create index if not exists idx_news_scope on news(scope)
+    """)
+    con.commit()
+
+
+def migrate_fundamentals(con):
+    """
+    Idempotent migration: create fundamentals table (R2-3 / C-3).
+    symbol is the primary key; all financial fields may be NULL.
+    """
+    con.execute("""
+        create table if not exists fundamentals (
+            symbol               text primary key,
+            pe                   real,
+            forward_pe           real,
+            eps_ttm              real,
+            revenue_growth_yoy   real,
+            gross_margin         real,
+            market_cap           real,
+            next_earnings_date   text,
+            updated_at           text not null
+        )
     """)
     con.commit()
 
@@ -554,9 +607,487 @@ def fetch_stocktwits_all(min_mentions: int = 2, pause: float = 1.0) -> None:
     print(f"stocktwits: {total} total new rows for {len(symbols)} symbols")
 
 
+# ---------------------------------------------------------------------------
+# RSS / News helpers
+# ---------------------------------------------------------------------------
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and collapse whitespace. Returns plain text."""
+    if not text:
+        return ""
+    text = html.unescape(text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text
+
+
+def _parse_rss_date(value: str | None) -> str | None:
+    """
+    Parse an RFC-2822 date string (as used in RSS pubDate) to ISO-8601 UTC.
+    Returns None when parsing fails — never fabricates a date.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    # Try RFC-2822: "Mon, 05 Jul 2026 07:00:00 GMT"
+    for fmt in (
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%d %b %Y %H:%M:%S %z",
+    ):
+        try:
+            parsed = dt.datetime.strptime(value, fmt)
+            return parsed.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            continue
+    return None
+
+
+def _fetch_rss(url: str, timeout: int = 20) -> list[dict]:
+    """
+    Fetch and parse an RSS feed. Returns a list of item dicts with keys:
+    title, link, description, pubDate, source_name.
+    Raises on network/parse errors — callers must wrap in try/except.
+    """
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; SerenityBot/2.0)"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+
+    # Google News often returns gzip; urlopen decompresses automatically.
+    root = ET.fromstring(raw.decode("utf-8", errors="replace"))
+
+    # Handle both <rss><channel> and Atom <feed> (Google News uses RSS 2.0)
+    items = []
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+    # RSS 2.0
+    for item in root.iter("item"):
+        def _text(tag):
+            el = item.find(tag)
+            return (el.text or "").strip() if el is not None else ""
+        items.append({
+            "title": _text("title"),
+            "link": _text("link"),
+            "description": _text("description"),
+            "pubDate": _text("pubDate"),
+        })
+
+    # Atom fallback
+    if not items:
+        for entry in root.iter("{http://www.w3.org/2005/Atom}entry"):
+            def _atxt(tag):
+                el = entry.find(tag, ns)
+                return (el.text or "").strip() if el is not None else ""
+            link_el = entry.find("{http://www.w3.org/2005/Atom}link")
+            link_href = (link_el.get("href") or "") if link_el is not None else ""
+            items.append({
+                "title": _atxt("{http://www.w3.org/2005/Atom}title"),
+                "link": link_href,
+                "description": _atxt("{http://www.w3.org/2005/Atom}summary"),
+                "pubDate": _atxt("{http://www.w3.org/2005/Atom}updated"),
+            })
+
+    return items
+
+
+def _insert_news_item(con, title: str, source: str, url: str, published_at,
+                      scope: str, symbols: list[str], description: str,
+                      fetched_at: str) -> int:
+    """
+    Insert one news item.  Idempotent: INSERT OR IGNORE on url.
+    Returns 1 if inserted, 0 if already present.
+    """
+    if not url or not title:
+        return 0
+    summary = _strip_html(description)[:300]
+    symbols_json = json.dumps(symbols, ensure_ascii=False) if symbols else "[]"
+    try:
+        con.execute(
+            """insert or ignore into news
+               (title, source, url, published_at, scope, symbols, summary, fetched_at)
+               values (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (title[:500], source, url, published_at, scope, symbols_json, summary, fetched_at),
+        )
+        return con.execute("select changes()").fetchone()[0]
+    except sqlite3.Error as exc:
+        print(f"  [news insert error] {exc} — url={url[:80]}", file=sys.stderr)
+        return 0
+
+
+# Macro query specs: (query_string, label)
+_MACRO_QUERIES = [
+    ("Fed+interest+rates", "cnbc-macro"),
+    ("US+China+chips+export+controls", "gnews-macro"),
+    ("semiconductor+tariffs", "gnews-macro"),
+    ("Taiwan+geopolitics+semiconductor", "gnews-macro"),
+]
+
+_MACRO_FEEDS = [
+    # CNBC Markets RSS
+    ("https://www.cnbc.com/id/100003114/device/rss/rss.html", "CNBC Markets"),
+    # CNN Money RSS
+    ("http://rss.cnn.com/rss/money_latest.rss", "CNN Money"),
+]
+
+
+def fetch_news(min_mentions: int = 2, top_n: int = 30, pause: float = 1.5) -> None:
+    """
+    News pipeline (R2-3):
+    1. Per-symbol: Google News RSS for top_n symbols by mention count.
+    2. Macro: CNBC/CNN RSS feeds + Google News fixed macro queries.
+    Idempotent on url.  One dead feed never kills the entire run.
+    """
+    con = connect()
+    fetched_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    total_inserted = 0
+
+    try:
+        # --- Symbol feeds ---
+        symbols = symbol_list(con, min_mentions)[:top_n]
+        print(f"[news] Fetching symbol feeds for {len(symbols)} symbols…")
+        for symbol in symbols:
+            query = urllib.parse.quote(f"{symbol} stock")
+            url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+            try:
+                items = _fetch_rss(url)
+            except Exception as exc:
+                print(f"  [news] {symbol} RSS failed: {exc}", file=sys.stderr)
+                time.sleep(pause)
+                continue
+
+            inserted = 0
+            for item in items:
+                link = item.get("link", "")
+                title = item.get("title", "")
+                pub = _parse_rss_date(item.get("pubDate"))
+                inserted += _insert_news_item(
+                    con, title, "Google News", link,
+                    pub, "symbol", [symbol],
+                    item.get("description", ""), fetched_at,
+                )
+            con.commit()
+            total_inserted += inserted
+            print(f"  [news] {symbol}: {len(items)} fetched, {inserted} new rows")
+            time.sleep(pause)
+
+        # --- Macro: CNBC / CNN feeds ---
+        print("[news] Fetching macro RSS feeds…")
+        for feed_url, feed_name in _MACRO_FEEDS:
+            try:
+                items = _fetch_rss(feed_url)
+            except Exception as exc:
+                print(f"  [news] {feed_name} RSS failed: {exc}", file=sys.stderr)
+                time.sleep(pause)
+                continue
+
+            inserted = 0
+            for item in items:
+                link = item.get("link", "")
+                title = item.get("title", "")
+                pub = _parse_rss_date(item.get("pubDate"))
+                inserted += _insert_news_item(
+                    con, title, feed_name, link,
+                    pub, "macro", [],
+                    item.get("description", ""), fetched_at,
+                )
+            con.commit()
+            total_inserted += inserted
+            print(f"  [news] {feed_name}: {len(items)} fetched, {inserted} new rows")
+            time.sleep(pause)
+
+        # --- Macro: Google News fixed queries ---
+        print("[news] Fetching macro Google News queries…")
+        for query_raw, source_label in _MACRO_QUERIES:
+            url = f"https://news.google.com/rss/search?q={query_raw}&hl=en-US&gl=US&ceid=US:en"
+            try:
+                items = _fetch_rss(url)
+            except Exception as exc:
+                print(f"  [news] macro query '{query_raw}' failed: {exc}", file=sys.stderr)
+                time.sleep(pause)
+                continue
+
+            inserted = 0
+            for item in items:
+                link = item.get("link", "")
+                title = item.get("title", "")
+                pub = _parse_rss_date(item.get("pubDate"))
+                inserted += _insert_news_item(
+                    con, title, source_label, link,
+                    pub, "macro", [],
+                    item.get("description", ""), fetched_at,
+                )
+            con.commit()
+            total_inserted += inserted
+            print(f"  [news] macro '{query_raw}': {len(items)} fetched, {inserted} new rows")
+            time.sleep(pause)
+
+    finally:
+        print(f"[news] Done — {total_inserted} total new rows inserted into news table.")
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Fundamentals helpers
+# ---------------------------------------------------------------------------
+
+_YFINANCE_AVAILABLE = None  # cached result
+
+
+def _yfinance_available() -> bool:
+    """Check once whether yfinance is importable."""
+    global _YFINANCE_AVAILABLE
+    if _YFINANCE_AVAILABLE is None:
+        try:
+            import yfinance  # noqa: F401
+            _YFINANCE_AVAILABLE = True
+        except ImportError:
+            _YFINANCE_AVAILABLE = False
+    return _YFINANCE_AVAILABLE
+
+
+def _yahoo_quote_summary(symbol: str) -> dict:
+    """
+    Fetch Yahoo Finance quoteSummary via plain HTTP.
+
+    Tries multiple endpoints / host combos in order:
+      1. query2.finance.yahoo.com v10 (often skips crumb requirement)
+      2. query1.finance.yahoo.com v10
+      3. query1.finance.yahoo.com v7 quote (simpler, fewer fields)
+
+    Returns a merged dict of all module responses, or {} on failure.
+    Missing fields are absent (callers must use .get()).
+    Raises RuntimeError only when all attempts return 401 — callers handle
+    the yfinance fallback.
+    """
+    modules = "summaryDetail,defaultKeyStatistics,financialData,calendarEvents"
+    _HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://finance.yahoo.com/",
+    }
+
+    sym_enc = urllib.parse.quote(symbol)
+    candidates = [
+        # query2 often bypasses crumb
+        (
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym_enc}"
+            f"?modules={urllib.parse.quote(modules)}",
+            "v10-q2",
+        ),
+        (
+            f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym_enc}"
+            f"?modules={urllib.parse.quote(modules)}",
+            "v10-q1",
+        ),
+    ]
+
+    last_exc = None
+    for url, label in candidates:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            result = (data.get("quoteSummary") or {}).get("result") or []
+            if not result:
+                return {}
+            merged = {}
+            for module_data in result:
+                merged.update(module_data)
+            return merged
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code in (401, 403):
+                continue  # try next candidate
+            raise
+        except Exception as exc:
+            last_exc = exc
+            continue
+
+    raise RuntimeError(
+        f"Yahoo quoteSummary 401/403 for {symbol} (all endpoints failed): {last_exc}"
+    )
+
+
+def _raw_val(d: dict, *keys):
+    """Navigate nested dicts via keys, returning .get('raw') or None."""
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    if isinstance(cur, dict):
+        return cur.get("raw")
+    if cur is None:
+        return None
+    return cur
+
+
+def _yf_fallback(symbol: str) -> dict:
+    """Use yfinance package as fallback if installed. Returns flat dict or {}."""
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(symbol)
+        info = tk.info or {}
+        cal = {}
+        try:
+            cal = tk.calendar or {}
+        except Exception:
+            pass
+        next_earnings = None
+        if cal:
+            # Calendar may return DataFrame or dict
+            try:
+                earnings_dates = cal.get("Earnings Date")
+                if earnings_dates and len(earnings_dates) > 0:
+                    next_earnings = str(earnings_dates[0])[:10]
+            except Exception:
+                pass
+        return {
+            "pe": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "eps_ttm": info.get("trailingEps"),
+            "revenue_growth_yoy": info.get("revenueGrowth"),
+            "gross_margin": info.get("grossMargins"),
+            "market_cap": info.get("marketCap"),
+            "next_earnings_date": next_earnings,
+        }
+    except Exception as exc:
+        print(f"  [fundamentals yfinance fallback] {symbol}: {exc}", file=sys.stderr)
+        return {}
+
+
+def fetch_fundamentals(min_mentions: int = 2, pause: float = 1.0) -> None:
+    """
+    Fundamentals pipeline (R2-3 / C-3):
+    Fetches P/E, forward P/E, EPS, revenue growth, gross margin, market cap,
+    next earnings date from Yahoo Finance quoteSummary for all tracked symbols.
+
+    Strategy:
+    1. Try plain HTTP (no crumb).
+    2. On 401 crumb error, soft-import yfinance if available; else store NULLs.
+    3. All missing fields → NULL. Never fabricate values.
+    Idempotent upsert per symbol.
+    """
+    con = connect()
+    now_str = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    symbols = symbol_list(con, min_mentions)
+    if not symbols:
+        print("[fundamentals] No symbols found — run fetch-x first.")
+        con.close()
+        return
+
+    print(f"[fundamentals] Processing {len(symbols)} symbols…")
+    total_upserted = 0
+
+    for symbol in symbols:
+        row = {
+            "pe": None,
+            "forward_pe": None,
+            "eps_ttm": None,
+            "revenue_growth_yoy": None,
+            "gross_margin": None,
+            "market_cap": None,
+            "next_earnings_date": None,
+        }
+        try:
+            data = _yahoo_quote_summary(symbol)
+            if data:
+                # summaryDetail: trailingPE, marketCap
+                sd = data.get("summaryDetail") or {}
+                row["pe"] = _raw_val(sd, "trailingPE")
+                row["market_cap"] = _raw_val(sd, "marketCap")
+
+                # defaultKeyStatistics: forwardPE, trailingEps
+                dks = data.get("defaultKeyStatistics") or {}
+                row["forward_pe"] = _raw_val(dks, "forwardPE")
+                row["eps_ttm"] = _raw_val(dks, "trailingEps")
+
+                # financialData: revenueGrowth, grossMargins
+                fd = data.get("financialData") or {}
+                row["revenue_growth_yoy"] = _raw_val(fd, "revenueGrowth")
+                row["gross_margin"] = _raw_val(fd, "grossMargins")
+
+                # calendarEvents: earnings.earningsDate[0]
+                ce = data.get("calendarEvents") or {}
+                earnings_list = ((ce.get("earnings") or {}).get("earningsDate") or [])
+                if earnings_list:
+                    raw_ts = earnings_list[0].get("raw")
+                    if raw_ts:
+                        try:
+                            row["next_earnings_date"] = dt.datetime.fromtimestamp(
+                                raw_ts, dt.timezone.utc
+                            ).strftime("%Y-%m-%d")
+                        except Exception:
+                            pass
+            else:
+                print(f"  [fundamentals] {symbol}: empty quoteSummary, storing NULLs")
+
+        except RuntimeError as exc:
+            # Likely 401 crumb issue
+            print(f"  [fundamentals] {symbol}: {exc}", file=sys.stderr)
+            if _yfinance_available():
+                print(f"  [fundamentals] {symbol}: falling back to yfinance…")
+                row.update(_yf_fallback(symbol))
+            else:
+                print(
+                    f"  [fundamentals] {symbol}: yfinance not installed — storing NULLs. "
+                    "Install yfinance for fallback support.",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(f"  [fundamentals] {symbol}: {exc} — storing NULLs", file=sys.stderr)
+
+        try:
+            con.execute(
+                """insert into fundamentals
+                   (symbol, pe, forward_pe, eps_ttm, revenue_growth_yoy,
+                    gross_margin, market_cap, next_earnings_date, updated_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   on conflict(symbol) do update set
+                       pe=excluded.pe,
+                       forward_pe=excluded.forward_pe,
+                       eps_ttm=excluded.eps_ttm,
+                       revenue_growth_yoy=excluded.revenue_growth_yoy,
+                       gross_margin=excluded.gross_margin,
+                       market_cap=excluded.market_cap,
+                       next_earnings_date=excluded.next_earnings_date,
+                       updated_at=excluded.updated_at""",
+                (
+                    symbol,
+                    row["pe"], row["forward_pe"], row["eps_ttm"],
+                    row["revenue_growth_yoy"], row["gross_margin"],
+                    row["market_cap"], row["next_earnings_date"],
+                    now_str,
+                ),
+            )
+            con.commit()
+            total_upserted += 1
+            non_null = sum(1 for v in row.values() if v is not None)
+            print(f"  [fundamentals] {symbol}: upserted ({non_null}/7 fields non-null)")
+        except sqlite3.Error as exc:
+            print(f"  [fundamentals] {symbol}: DB error {exc}", file=sys.stderr)
+
+        time.sleep(pause)
+
+    print(f"[fundamentals] Done — {total_upserted} symbols upserted.")
+    con.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Ingest Serenity X posts, symbols and Yahoo prices into SQLite.")
-    ap.add_argument("command", choices=["fetch-x", "prices", "all", "stats", "stocktwits"])
+    ap.add_argument("command", choices=["fetch-x", "prices", "all", "stats", "stocktwits", "news", "fundamentals"])
     ap.add_argument("--max-pages", type=int, default=20)
     ap.add_argument("--days", type=int, default=420)
     ap.add_argument("--min-mentions", type=int, default=2)
@@ -574,6 +1105,10 @@ def main():
             con.commit()
         else:
             fetch_stocktwits_all(args.min_mentions, args.pause)
+    if args.command == "news":
+        fetch_news(min_mentions=args.min_mentions, pause=args.pause)
+    if args.command == "fundamentals":
+        fetch_fundamentals(min_mentions=args.min_mentions, pause=args.pause)
     if args.command == "stats":
         con = connect()
         try:
@@ -581,6 +1116,8 @@ def main():
             print("mentions", con.execute("select count(*) from mentions").fetchone()[0])
             print("prices", con.execute("select count(*) from prices").fetchone()[0])
             print("news_sentiment", con.execute("select count(*) from news_sentiment").fetchone()[0])
+            print("news", con.execute("select count(*) from news").fetchone()[0])
+            print("fundamentals", con.execute("select count(*) from fundamentals").fetchone()[0])
             for row in con.execute("select symbol, count(*) c, min(mentioned_at), max(mentioned_at) from mentions group by symbol order by c desc, symbol"):
                 print(dict(row))
         finally:
