@@ -540,6 +540,44 @@ function renderSignalPanel(signal) {
   `;
 }
 
+// ── R3-4: Earnings countdown badge + signal warning ───────────────────────────
+
+function renderEarningsBadge(nextDate) {
+  const badge = $('earningsBadge');
+  const warn  = $('earningsWarningBar');
+
+  if (!nextDate) {
+    if (badge) badge.style.display = 'none';
+    if (warn)  warn.style.display  = 'none';
+    return;
+  }
+
+  const today  = new Date(); today.setHours(0, 0, 0, 0);
+  const target = new Date(nextDate); target.setHours(0, 0, 0, 0);
+  const days   = Math.round((target - today) / 86400000);
+
+  // Title badge: show when 0–7 days
+  if (badge) {
+    if (days >= 0 && days <= 7) {
+      badge.textContent = `📅 ${days} 天後財報`;
+      badge.className   = days <= 2 ? 'earnings-badge earnings-badge--urgent' : 'earnings-badge earnings-badge--warn';
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // Signal panel warning bar: show when 0–5 days
+  if (warn) {
+    if (days >= 0 && days <= 5) {
+      warn.textContent  = `⚠️ 財報臨近（${days} 天後），波動風險升高`;
+      warn.style.display = 'block';
+    } else {
+      warn.style.display = 'none';
+    }
+  }
+}
+
 // ── Fundamentals card ─────────────────────────────────────────────────────────
 
 async function loadFundamentals(symbol) {
@@ -552,8 +590,11 @@ async function loadFundamentals(symbol) {
     });
     if (!data || data.error || !data.symbol) throw new Error('empty');
     renderFundamentals(data);
+    // R3-4: update earnings countdown badge from fundamentals data
+    renderEarningsBadge(data.next_earnings_date || null);
   } catch (_) {
     el.innerHTML = '<p class="placeholder-text">資料尚未抓取</p>';
+    renderEarningsBadge(null);
   }
 }
 
@@ -579,6 +620,59 @@ function renderFundamentals(d) {
     <div class="fund-item"><span class="fund-label">市值</span><span class="fund-val">${fmtCap(d.market_cap)}</span></div>
     <div class="fund-item fund-item--wide"><span class="fund-label">下次財報日</span><span class="fund-val">${fmt(d.next_earnings_date)}</span></div>
     ${d.updated_at ? `<div class="fund-item fund-item--wide" style="opacity:.5;font-size:10px;"><span class="fund-label">更新時間</span><span class="fund-val">${d.updated_at}</span></div>` : ''}
+  `;
+}
+
+// ── R3-3: Analyst Estimates card ──────────────────────────────────────────────
+
+async function loadEstimates(symbol) {
+  const el = $('estimatesContent');
+  if (!el) return;
+  el.innerHTML = '<p class="placeholder-text">資料尚未抓取</p>';
+  try {
+    const data = await fetch(`/api/estimates/${encodeURIComponent(symbol)}`).then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    if (!data || data.error) throw new Error('empty');
+    renderEstimates(data);
+  } catch (_) {
+    el.innerHTML = '<p class="placeholder-text">資料尚未抓取</p>';
+  }
+}
+
+function renderEstimates(d) {
+  const el = $('estimatesContent');
+  if (!el) return;
+  const dash   = v => (v == null ? '—' : v);
+  const fmtUSD = v => (v == null ? '—' : `$${Number(v).toFixed(2)}`);
+  const fmtPct = v => (v == null ? '' : `(${Number(v) > 0 ? '+' : ''}${(Number(v) * 100).toFixed(1)}%)`);
+  const tgtColor = d.target_pct != null ? (d.target_pct > 0 ? '#1a6640' : '#b84000') : 'inherit';
+  const revMap = { up: { icon: '↑', color: '#1a6640' }, down: { icon: '↓', color: '#b84000' }, flat: { icon: '→', color: 'var(--muted)' } };
+  const rev = revMap[d.revision] || { icon: '—', color: 'var(--muted)' };
+  el.innerHTML = `
+    <div class="estimates-grid">
+      <div class="est-item est-item--wide">
+        <span class="fund-label">評級</span>
+        <span class="fund-val">${escapeHtml(d.rec_label || '—')}&nbsp;<span style="font-size:10px;color:var(--muted);">(mean ${d.rec_mean != null ? Number(d.rec_mean).toFixed(2) : '—'})</span></span>
+      </div>
+      <div class="est-item">
+        <span class="fund-label">分析師數</span>
+        <span class="fund-val">${dash(d.analyst_count)}</span>
+      </div>
+      <div class="est-item">
+        <span class="fund-label">目標價均值</span>
+        <span class="fund-val">${fmtUSD(d.target_mean)}&nbsp;<span style="font-size:10px;color:${tgtColor};">${fmtPct(d.target_pct)}</span></span>
+      </div>
+      <div class="est-item">
+        <span class="fund-label">EPS 預估</span>
+        <span class="fund-val">${d.eps_estimate != null ? Number(d.eps_estimate).toFixed(2) : '—'}</span>
+      </div>
+      <div class="est-item">
+        <span class="fund-label">修正方向</span>
+        <span class="fund-val" style="font-size:20px;color:${rev.color};line-height:1;">${rev.icon}</span>
+      </div>
+    </div>
   `;
 }
 
@@ -654,6 +748,280 @@ function renderFeed(items) {
   `).join('');
 }
 
+// ── R3-2: Regime badge ────────────────────────────────────────────────────────
+
+async function loadRegime() {
+  try {
+    const data = await fetch('/api/regime').then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    renderRegimeBadge(data);
+  } catch (_) {
+    // Keep default placeholder — endpoint will 404 until backend lands
+  }
+}
+
+function renderRegimeBadge(data) {
+  const el = $('regimeBadge');
+  if (!el) return;
+  const map = {
+    bull:    { icon: '🟢', label: '多頭', cls: 'regime-bull' },
+    neutral: { icon: '🟡', label: '中性', cls: 'regime-neutral' },
+    bear:    { icon: '🔴', label: '空頭', cls: 'regime-bear' },
+    unknown: { icon: '⚪', label: '未知', cls: 'regime-unknown' },
+  };
+  const key = (data.regime || 'unknown').toLowerCase();
+  const r   = map[key] || map.unknown;
+  el.textContent = `${r.icon} ${r.label}`;
+  el.className   = `regime-badge ${r.cls}`;
+
+  const details = data.details || {};
+  const lines   = [];
+  ['SPY', 'SOXX', 'QQQ'].forEach(sym => {
+    const d = details[sym];
+    if (!d) return;
+    const pos   = d.above_ema200 ? '上方 ✓' : '下方 ✗';
+    const price = d.price  != null ? `$${Number(d.price).toFixed(2)}`  : '—';
+    const ema   = d.ema200 != null ? `$${Number(d.ema200).toFixed(2)}` : '—';
+    lines.push(`${sym}: ${price}  EMA200 ${ema}  ${pos}`);
+  });
+  if (data.note) lines.push(`\n注：${data.note}`);
+  if (data.live_since) lines.push(`實時紀錄自 ${data.live_since}`);
+  el.title = lines.length ? lines.join('\n') : '市場狀態';
+}
+
+// ── Global page navigation ────────────────────────────────────────────────────
+
+window.switchGlobalPage = function(page) {
+  const kpis      = $('kpis');
+  const workbench = document.querySelector('.workbench');
+  const hitrate   = $('hitrateView');
+
+  document.querySelectorAll('.global-page-nav button').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.page === page));
+
+  if (page === 'dashboard') {
+    if (kpis)      kpis.style.display      = '';
+    if (workbench) workbench.style.display  = '';
+    if (hitrate)   hitrate.style.display    = 'none';
+  } else if (page === 'hitrate') {
+    if (kpis)      kpis.style.display      = 'none';
+    if (workbench) workbench.style.display  = 'none';
+    if (hitrate)   hitrate.style.display    = 'block';
+    loadHitRate();
+  }
+};
+
+// ── R3-1: Hit-rate page ───────────────────────────────────────────────────────
+
+let _hitrateLoaded = false;
+
+async function loadHitRate() {
+  const container = $('hitrateView');
+  if (!container || _hitrateLoaded) return;
+
+  container.innerHTML = '<p class="placeholder-text" style="padding:16px 0;">載入命中率資料中...</p>';
+  try {
+    const data = await fetch('/api/hitrate').then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    renderHitRate(data);
+    _hitrateLoaded = true;
+  } catch (_) {
+    // Graceful degradation when endpoint 404s
+    container.innerHTML = `
+      <div class="hitrate-banner">
+        <span class="hitrate-banner-icon">ℹ️</span>
+        <div>
+          <b>資料可靠性說明</b>：
+          回溯重建數據為樣本外方法，非實時發布；實時紀錄需每日訊號快照排程累積後啟動。
+        </div>
+      </div>
+      <div class="hitrate-empty">
+        <p>📊 命中率資料尚未建立</p>
+        <p class="hitrate-empty-sub">需累積至少 30 天訊號快照後才能計算統計命中率（見 ROADMAP B-1）</p>
+      </div>
+      <div id="hitrateChanges" class="hitrate-section"></div>
+    `;
+    _hitrateLoaded = true;
+  }
+  loadChangesForHitrate();
+}
+
+function renderHitRate(data) {
+  const container = $('hitrateView');
+  if (!container) return;
+
+  const summary   = data.summary       || [];
+  const calls     = data.recent_calls  || [];
+  const note      = data.reliability_note || '';
+  const liveSince = data.live_since || null;
+
+  container.innerHTML = `
+    <div class="hitrate-banner">
+      <span class="hitrate-banner-icon">ℹ️</span>
+      <div>
+        <b>資料可靠性說明</b>：
+        回溯重建數據為樣本外方法，非實時發布；
+        ${liveSince
+          ? `實時紀錄自 <b>${escapeHtml(liveSince)}</b> 起累積。`
+          : '實時紀錄尚未啟動（每日快照排程開始後自動累積）。'}
+        ${note ? `<br><span style="color:var(--muted);font-size:11px;">${escapeHtml(note)}</span>` : ''}
+      </div>
+    </div>
+
+    <div class="hitrate-section">
+      <h3 class="hitrate-section-title">訊號統計總覽</h3>
+      ${summary.length
+        ? renderHitRateSummaryTable(summary)
+        : '<p class="placeholder-text">暫無足夠樣本（每個訊號需 n≥30）</p>'}
+    </div>
+
+    <div class="hitrate-section">
+      <h3 class="hitrate-section-title">最近訊號記錄</h3>
+      ${calls.length
+        ? renderHitRateCalls(calls)
+        : '<p class="placeholder-text">暫無訊號記錄</p>'}
+    </div>
+
+    <div id="hitrateChanges" class="hitrate-section"></div>
+  `;
+}
+
+function sigBadgeClass(sig) {
+  return {
+    BUY_WATCH:   'sig-buy-watch',
+    BUY_TRIGGER: 'sig-buy-trigger',
+    HOLD:        'sig-hold',
+    EXIT_ALERT:  'sig-exit',
+    OVERBOUGHT:  'sig-overbought',
+    NEUTRAL:     'sig-neutral',
+  }[sig] || 'sig-neutral';
+}
+
+function renderHitRateSummaryTable(summary) {
+  const rows = summary.map(s => {
+    const wr  = s.win_rate != null ? `${(Number(s.win_rate) * 100).toFixed(0)}%` : '樣本不足';
+    const ret = s.median_30d_return != null ? `${(Number(s.median_30d_return) * 100).toFixed(1)}%` : '—';
+    const vu  = s.vs_universe != null ? `${(Number(s.vs_universe) * 100).toFixed(1)}%` : '—';
+    const src = s.source === 'live'
+      ? '<span class="hr-badge hr-live">實時</span>'
+      : '<span class="hr-badge hr-backtest">回溯</span>';
+    const wrStyle = s.win_rate == null ? '' :
+      s.win_rate >= 0.55 ? 'color:#1a6640;font-weight:bold;' :
+      s.win_rate <  0.45 ? 'color:#b84000;' : '';
+    return `<tr>
+      <td><span class="sig-badge ${sigBadgeClass(s.signal)}">${escapeHtml((s.signal || '—').replace(/_/g, ' '))}</span></td>
+      <td style="text-align:center;">${s.n != null ? s.n : '—'}</td>
+      <td style="text-align:center;">${ret}</td>
+      <td style="text-align:center;${wrStyle}">${wr}</td>
+      <td style="text-align:center;">${vu}</td>
+      <td>${src}</td>
+    </tr>`;
+  }).join('');
+
+  return `<table class="hitrate-table">
+    <thead><tr>
+      <th>訊號</th><th>樣本數</th><th>30日中位報酬</th><th>勝率</th><th>vs 宇宙</th><th>來源</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderHitRateCalls(calls) {
+  const rows = calls.map(c => {
+    const hitClass = c.hit === true ? 'hit-yes' : c.hit === false ? 'hit-no' : 'hit-pending';
+    const hitIcon  = c.hit === true ? '✓' : c.hit === false ? '✗' : '⏳';
+    const ret  = c.fwd_return      != null ? `${(Number(c.fwd_return)      * 100).toFixed(1)}%` : '—';
+    const univ = c.universe_return != null ? `vs ${(Number(c.universe_return) * 100).toFixed(1)}%` : '';
+    const src  = c.source === 'live'
+      ? '<span class="hr-badge hr-live">實時</span>'
+      : '<span class="hr-badge hr-backtest">回溯</span>';
+    const sym = escapeHtml(c.symbol || '');
+    return `<div class="hitrate-call-row">
+      <span class="hitrate-call-hit ${hitClass}">${hitIcon}</span>
+      <span class="hitrate-call-sym"><a href="#" onclick="event.preventDefault();switchGlobalPage('dashboard');selectSymbol('${sym}')">${sym}</a></span>
+      <span class="hitrate-call-date">${escapeHtml((c.date || '').slice(0, 10))}</span>
+      <span class="sig-badge ${sigBadgeClass(c.signal)}">${escapeHtml((c.signal || '—').replace(/_/g, ' '))}</span>
+      <span class="hitrate-call-ret">${ret}</span>
+      <span class="hitrate-call-univ">${univ}</span>
+      ${src}
+    </div>`;
+  }).join('');
+  return `<div class="hitrate-calls">${rows}</div>`;
+}
+
+// ── R3-5: Signal changes + Δ badges ──────────────────────────────────────────
+
+let _changesData = [];
+
+async function loadChanges() {
+  try {
+    const data = await fetch('/api/changes?days=7').then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    _changesData = data.changes || data || [];
+    applyChangeBadgesToSymbols();
+  } catch (_) {
+    _changesData = [];
+  }
+}
+
+function applyChangeBadgesToSymbols() {
+  if (!_changesData || !_changesData.length) return;
+  // Build set of symbols with changes within the last 24 hours
+  const now = Date.now();
+  const recentMap = {};
+  for (const c of _changesData) {
+    const ts = c.date ? new Date(c.date).getTime() : 0;
+    if (now - ts <= 24 * 3600 * 1000) {
+      recentMap[c.symbol] = c;
+    }
+  }
+  document.querySelectorAll('.symbol-row').forEach(btn => {
+    const sym = btn.dataset.symbol;
+    // Remove any existing delta badge first
+    const existing = btn.querySelector('.delta-badge');
+    if (existing) existing.remove();
+    if (!recentMap[sym]) return;
+    const c = recentMap[sym];
+    const badge = document.createElement('span');
+    badge.className = 'delta-badge';
+    badge.textContent = 'Δ';
+    badge.title = `訊號變化：${c.prev_signal || '—'} → ${c.new_signal || '—'}`;
+    // Append inside .ticker cell to avoid breaking the 3-col grid layout
+    const ticker = btn.querySelector('.ticker');
+    if (ticker) ticker.appendChild(badge);
+    else btn.appendChild(badge);
+  });
+}
+
+function loadChangesForHitrate() {
+  const el = $('hitrateChanges');
+  if (!el) return;
+  if (!_changesData || !_changesData.length) {
+    el.innerHTML = '';
+    return;
+  }
+  const rows = _changesData.slice(0, 20).map(c => {
+    const sym = escapeHtml(c.symbol || '');
+    return `<div class="hitrate-call-row">
+      <span class="hitrate-call-sym"><a href="#" onclick="event.preventDefault();switchGlobalPage('dashboard');selectSymbol('${sym}')">${sym}</a></span>
+      <span class="hitrate-call-date">${escapeHtml((c.date || '').slice(0, 10))}</span>
+      <span class="sig-badge ${sigBadgeClass(c.prev_signal)}">${escapeHtml((c.prev_signal || '—').replace(/_/g, ' '))}</span>
+      <span style="color:var(--muted);font-size:13px;font-weight:bold;">→</span>
+      <span class="sig-badge ${sigBadgeClass(c.new_signal)}">${escapeHtml((c.new_signal || '—').replace(/_/g, ' '))}</span>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <h3 class="hitrate-section-title">最近訊號變化（7 天）</h3>
+    <div class="hitrate-calls">${rows}</div>
+  `;
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function escapeHtml(s) {
@@ -703,6 +1071,11 @@ async function init() {
   const params    = new URLSearchParams(location.search);
   const initSymbol = (params.get('s') || '').toUpperCase() || null;
   const initTab   = params.get('tab') || 'chart';
+
+  // R3-2: load regime badge (once per page load, graceful degradation)
+  loadRegime();
+  // R3-5: load signal changes for Δ badges (once per page load)
+  loadChanges();
 
   try {
     const config = await json('/api/config');
@@ -778,6 +1151,8 @@ function renderSymbols() {
     </button>
   `).join('');
   document.querySelectorAll('.symbol-row').forEach(btn => btn.onclick = () => selectSymbol(btn.dataset.symbol));
+  // R3-5: apply Δ badges for symbols with recent signal changes
+  applyChangeBadgesToSymbols();
 }
 
 function _activeTab() {
@@ -823,8 +1198,12 @@ async function selectSymbol(symbol, { pushState = true } = {}) {
   if ($('tabScorecardBtn').classList.contains('active')) renderScorecard(symbol, state.scorecardData);
   if ($('tabDossierBtn') && $('tabDossierBtn').classList.contains('active')) loadAndRenderDossier(symbol);
 
+  // Reset earnings badge on symbol switch
+  renderEarningsBadge(null);
+
   // Load new panels (graceful degradation)
   loadFundamentals(symbol);
+  loadEstimates(symbol);   // R3-3
   loadNews(symbol);
 }
 

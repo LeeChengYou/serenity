@@ -19,13 +19,25 @@
       <div class="hero-card">
         <span class="pulse"></span>
         <p>自動抓取貼文、回覆和訂閱內容，擷取 Cashtag，關聯 Yahoo 日線價格，並在曲線上記標原貼觀點。</p>
-        <div style="margin-top: 12px;">
+        <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <a href="/monitor.html" class="monitor-btn" style="text-decoration: none; font-size: 12px; font-weight: bold; background: var(--ink); color: var(--paper); padding: 6px 14px; border-radius: 999px; display: inline-block;">📊 系統與 AI 監控面板</a>
+          <span id="regimeBadge" class="regime-badge regime-unknown" title="載入市場狀態中...">⚪ 市場狀態</span>
         </div>
       </div>
     </section>
 
+    <!-- Global page navigation -->
+    <nav class="global-page-nav reveal">
+      <button class="active" data-page="dashboard" onclick="switchGlobalPage('dashboard')">📊 儀表板</button>
+      <button data-page="hitrate" onclick="switchGlobalPage('hitrate')">📈 命中率</button>
+    </nav>
+
     <section class="kpis reveal delay-1" id="kpis"></section>
+
+    <!-- Hit-rate page (global, not per-symbol) — hidden by default -->
+    <section id="hitrateView" class="hitrate-view" style="display:none;">
+      <p class="placeholder-text" style="padding:8px 0;">命中率資料載入中...</p>
+    </section>
 
     <section class="workbench reveal delay-2">
       <!-- ── Stock list panel ── -->
@@ -47,7 +59,7 @@
         <div class="chart-head">
           <div>
             <p class="eyebrow">price x mention timeline</p>
-            <h2 id="activeTitle">選擇一個 Symbol</h2>
+            <h2 id="activeTitle" style="display:inline;">選擇一個 Symbol</h2><span id="earningsBadge" class="earnings-badge" style="display:none;"></span>
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
             <div class="meta-strip" id="activeMeta"></div>
@@ -64,6 +76,9 @@
 
         <!-- Signal panel (shown across all tabs) -->
         <div id="signalPanel" class="signal-panel" style="display: none;"></div>
+
+        <!-- Earnings warning bar (shown across all tabs when earnings ≤5 days away) -->
+        <div id="earningsWarningBar" class="earnings-warning-bar" style="display:none;"></div>
 
         <!-- ── Chart view ── -->
         <div id="chartView" style="flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto;">
@@ -110,6 +125,14 @@
           <div id="fundamentalsCard" class="info-card">
             <div class="info-card-head">📊 基本面數據</div>
             <div id="fundamentalsContent" class="fundamentals-grid">
+              <p class="placeholder-text">資料尚未抓取</p>
+            </div>
+          </div>
+
+          <!-- Analyst estimates card (R3-3) -->
+          <div id="estimatesCard" class="info-card">
+            <div class="info-card-head">🎯 分析師預估</div>
+            <div id="estimatesContent" class="estimates-grid">
               <p class="placeholder-text">資料尚未抓取</p>
             </div>
           </div>
