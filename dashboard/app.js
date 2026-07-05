@@ -997,6 +997,7 @@ window.switchGlobalPage = function(page) {
   const kpis      = $('kpis');
   const workbench = document.querySelector('.workbench');
   const hitrate   = $('hitrateView');
+  const arena     = $('arenaView');
 
   document.querySelectorAll('.global-page-nav button').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.page === page));
@@ -1005,11 +1006,19 @@ window.switchGlobalPage = function(page) {
     if (kpis)      kpis.style.display      = '';
     if (workbench) workbench.style.display  = '';
     if (hitrate)   hitrate.style.display    = 'none';
+    if (arena)     arena.style.display      = 'none';
   } else if (page === 'hitrate') {
     if (kpis)      kpis.style.display      = 'none';
     if (workbench) workbench.style.display  = 'none';
     if (hitrate)   hitrate.style.display    = 'block';
+    if (arena)     arena.style.display      = 'none';
     loadHitRate();
+  } else if (page === 'arena') {
+    if (kpis)      kpis.style.display      = 'none';
+    if (workbench) workbench.style.display  = 'none';
+    if (hitrate)   hitrate.style.display    = 'none';
+    if (arena)     arena.style.display      = 'block';
+    loadArena();
   }
 };
 
@@ -1570,6 +1579,165 @@ function renderDossier(d) {
     <div style="margin-top:16px;padding:8px 10px;border:1px dashed rgba(0,0,0,0.18);border-radius:4px;font-size:10px;color:var(--muted);line-height:1.4;">${escapeHtml(d.reliability_note || '')}</div>
   `;
 }
+
+// ── V6 Arena page ─────────────────────────────────────────────────────────────
+
+let _arenaLoaded = false;
+
+async function loadArena() {
+  const leaderEl  = $('arenaLeaderboard');
+  const navEl     = $('arenaNavChart');
+  const refEl     = $('arenaReflections');
+  const selectEl  = $('arenaAgentSelect');
+
+  const picker = $('arenaMonthPicker');
+  const now = new Date();
+  const month = picker && picker.value
+    ? picker.value
+    : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  // Set picker default
+  if (picker && !picker.value) picker.value = month;
+
+  // Fetch all four endpoints in parallel
+  const base = `/api/arena/`;
+  const [lb, nv, rf] = await Promise.all([
+    fetch(`${base}leaderboard?month=${month}`).then(r => r.ok ? r.json() : {rows:[]}).catch(() => ({rows:[]})),
+    fetch(`${base}nav?month=${month}`).then(r => r.ok ? r.json() : {series:{},benchmark:{}}).catch(() => ({series:{},benchmark:{}})),
+    fetch(`${base}reflections?month=${month}`).then(r => r.ok ? r.json() : {rows:[]}).catch(() => ({rows:[]})),
+  ]);
+
+  // Render leaderboard
+  if (leaderEl) {
+    const rows = lb.rows || [];
+    if (!rows.length) {
+      leaderEl.innerHTML = '<p class="placeholder-text">本月尚無排行榜資料</p>';
+    } else {
+      leaderEl.innerHTML = `
+        <table class="arena-table">
+          <thead><tr>
+            <th>排名</th><th>Agent</th><th>領域</th>
+            <th>月報酬率</th><th>MDD</th><th>交易筆數</th><th>領域排名</th>
+          </tr></thead>
+          <tbody>
+          ${rows.map(r => `<tr>
+            <td class="arena-mono">${r.rank_overall ?? '-'}</td>
+            <td><a href="#" onclick="event.preventDefault();$('arenaAgentSelect').value='${escapeHtml(r.agent_id)}';loadArenaTrades()">${escapeHtml(r.agent_id)}</a></td>
+            <td>${escapeHtml(r.domain ?? '')}</td>
+            <td class="arena-mono ${(r.ret_pct ?? 0) >= 0 ? 'arena-pos' : 'arena-neg'}">${r.ret_pct != null ? (r.ret_pct >= 0 ? '+' : '') + r.ret_pct.toFixed(2) + '%' : '-'}</td>
+            <td class="arena-mono">${r.mdd_pct != null ? r.mdd_pct.toFixed(2) + '%' : '-'}</td>
+            <td class="arena-mono">${r.n_trades ?? '-'}</td>
+            <td class="arena-mono">${r.rank_domain ?? '-'}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table>`;
+      // Populate agent selector
+      if (selectEl) {
+        const existing = new Set(Array.from(selectEl.options).map(o => o.value));
+        rows.forEach(r => {
+          if (!existing.has(r.agent_id)) {
+            const opt = document.createElement('option');
+            opt.value = r.agent_id;
+            opt.textContent = r.agent_id;
+            selectEl.appendChild(opt);
+          }
+        });
+      }
+    }
+  }
+
+  // Render NAV chart (simple SVG line chart)
+  if (navEl) {
+    const series = nv.series || {};
+    const benchmark = nv.benchmark || {};
+    const allSeries = Object.assign({}, series, benchmark);
+    const keys = Object.keys(allSeries);
+    if (!keys.length) {
+      navEl.innerHTML = '<p class="placeholder-text">本月尚無 NAV 資料</p>';
+    } else {
+      const colors = ['#4a90d9','#e07b39','#5cb85c','#9b59b6','#f39c12','#1abc9c','#e74c3c','#34495e','#95a5a6','#c0392b'];
+      let tableHtml = `<table class="arena-nav-table"><thead><tr><th>日期</th>${keys.map(k => `<th>${escapeHtml(k)}</th>`).join('')}</tr></thead><tbody>`;
+      // Gather all dates
+      const datesSet = new Set();
+      keys.forEach(k => (allSeries[k] || []).forEach(p => datesSet.add(p.date)));
+      const dates = Array.from(datesSet).sort();
+      dates.forEach(d => {
+        tableHtml += `<tr><td class="arena-mono">${escapeHtml(d)}</td>`;
+        keys.forEach(k => {
+          const pt = (allSeries[k] || []).find(p => p.date === d);
+          const val = pt ? pt.nav.toFixed(2) : '-';
+          tableHtml += `<td class="arena-mono">${val}</td>`;
+        });
+        tableHtml += '</tr>';
+      });
+      tableHtml += '</tbody></table>';
+      navEl.innerHTML = `<div class="arena-nav-legend">${keys.map((k,i) => `<span style="color:${colors[i % colors.length]}">■ ${escapeHtml(k)}</span>`).join(' ')}</div>` + tableHtml;
+    }
+  }
+
+  // Render reflections
+  if (refEl) {
+    const rows = rf.rows || [];
+    if (!rows.length) {
+      refEl.innerHTML = '<p class="placeholder-text">本月尚無反思資料</p>';
+    } else {
+      refEl.innerHTML = rows.map(r => `
+        <div class="arena-reflection-card">
+          <div class="arena-reflection-agent">${escapeHtml(r.agent_id)}</div>
+          ${r.public_letter ? `<div class="arena-letter"><strong>公開信：</strong><p>${escapeHtml(r.public_letter)}</p></div>` : ''}
+          ${r.reflection_md ? `<div class="arena-reflection"><strong>月度反思：</strong><p>${escapeHtml(r.reflection_md)}</p></div>` : ''}
+        </div>`).join('');
+    }
+  }
+
+  _arenaLoaded = true;
+}
+
+window.loadArenaTrades = async function() {
+  const selectEl = $('arenaAgentSelect');
+  const tradesEl = $('arenaTradesLog');
+  const picker   = $('arenaMonthPicker');
+  if (!selectEl || !tradesEl) return;
+
+  const agentId = selectEl.value;
+  if (!agentId) { tradesEl.innerHTML = '<p class="placeholder-text">請選擇 Agent</p>'; return; }
+
+  const now = new Date();
+  const month = picker && picker.value
+    ? picker.value
+    : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  tradesEl.innerHTML = '<p class="placeholder-text">載入中...</p>';
+  try {
+    const data = await fetch(`/api/arena/trades?agent=${encodeURIComponent(agentId)}&month=${month}`).then(r => r.json());
+    const trades = data.trades || [];
+    if (!trades.length) {
+      tradesEl.innerHTML = '<p class="placeholder-text">本月無交易記錄</p>';
+      return;
+    }
+    tradesEl.innerHTML = `<table class="arena-table">
+      <thead><tr><th>決策日</th><th>成交日</th><th>標的</th><th>方向</th><th>金額</th><th>狀態</th><th>理由</th></tr></thead>
+      <tbody>
+      ${trades.map(t => {
+        const statusBadge = t.status === 'filled'
+          ? '<span class="arena-badge arena-badge-filled">成交</span>'
+          : '<span class="arena-badge arena-badge-rejected">拒單</span>';
+        return `<tr>
+          <td class="arena-mono">${escapeHtml(t.decided_date || '-')}</td>
+          <td class="arena-mono">${escapeHtml(t.exec_date || '-')}</td>
+          <td class="arena-mono">${escapeHtml(t.symbol || '-')}</td>
+          <td class="arena-mono">${escapeHtml(t.side || '-')}</td>
+          <td class="arena-mono">${t.usd != null ? '$' + Number(t.usd).toFixed(0) : (t.qty != null ? t.qty.toFixed(2) + 'sh' : '-')}</td>
+          <td>${statusBadge}${t.rejected_reason ? `<span class="arena-rej-reason" title="${escapeHtml(t.rejected_reason)}">ⓘ</span>` : ''}</td>
+          <td class="arena-reason">${escapeHtml((t.reason || '').slice(0, 80))}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>`;
+  } catch (e) {
+    tradesEl.innerHTML = `<p class="placeholder-text">載入失敗：${escapeHtml(e.message)}</p>`;
+  }
+};
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
