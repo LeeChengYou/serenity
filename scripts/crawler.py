@@ -681,8 +681,25 @@ class Edgar13FSource(Source):
         def _norm(name):
             return re.sub(r"\s+", " ", name.upper().strip())
 
-        newer_map = {_norm(h["issuer"]): h for h in newer_h}
-        older_map = {_norm(h["issuer"]): h for h in older_h}
+        # Key by CUSIP (stable across quarters even when issuer-name formatting
+        # drifts, e.g. "CHEVRON CORP" vs "CHEVRON CORPORATION"); fall back to
+        # normalized name only when CUSIP is missing. Aggregate duplicate keys
+        # (13F lists one row per share class / put-call bucket).
+        def _key(h):
+            return h.get("cusip") or _norm(h["issuer"])
+
+        def _agg(holdings):
+            out: dict = {}
+            for h in holdings:
+                k = _key(h)
+                if k in out:
+                    out[k]["value_usd"] = (out[k]["value_usd"] or 0) + (h["value_usd"] or 0)
+                else:
+                    out[k] = dict(h)
+            return out
+
+        newer_map = _agg(newer_h)
+        older_map = _agg(older_h)
         all_keys = set(newer_map) | set(older_map)
 
         changes = []
