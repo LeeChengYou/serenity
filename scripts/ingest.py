@@ -29,6 +29,14 @@ CURL_FILES = {
 CASHTAG_RE = re.compile(r"(?<![A-Za-z0-9_])\$([A-Z][A-Z0-9.]{0,9})(?![A-Za-z0-9_])")
 NOISE_SYMBOLS = {"AI", "I", "A", "USD", "US", "CEO", "ETF", "IPO"}
 
+# ---------------------------------------------------------------------------
+# Benchmark symbols — shared constant (R3-2)
+# These are market indices used for regime gauge, NOT stocks.
+# They must be excluded from all universe queries (signals, snapshots, hit-rate,
+# /api/symbols listing) so they never contaminate universe medians.
+# ---------------------------------------------------------------------------
+BENCHMARK_SYMBOLS: set[str] = {"SPY", "SOXX", "QQQ"}
+
 
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +106,7 @@ def connect():
     migrate_news_sentiment(con)
     migrate_news(con)
     migrate_fundamentals(con)
+    migrate_analyst_estimates(con)
     return con
 
 
@@ -187,6 +196,36 @@ def migrate_fundamentals(con):
             next_earnings_date   text,
             updated_at           text not null
         )
+    """)
+    con.commit()
+
+
+def migrate_analyst_estimates(con):
+    """
+    Idempotent migration: create analyst_estimates table (R3-3).
+    symbol is the primary key; all financial fields may be NULL.
+    """
+    con.execute("""
+        create table if not exists analyst_estimates (
+            symbol                   text primary key,
+            target_mean              real,
+            target_median            real,
+            target_high              real,
+            target_low               real,
+            n_analysts               integer,
+            recommendation_key       text,
+            recommendation_mean      real,
+            eps_estimate_current_q   real,
+            eps_estimate_next_q      real,
+            eps_estimate_current_y   real,
+            up_revisions_30d         integer,
+            down_revisions_30d       integer,
+            updated_at               text not null
+        )
+    """)
+    con.execute("""
+        create index if not exists idx_analyst_estimates_symbol
+            on analyst_estimates(symbol)
     """)
     con.commit()
 
@@ -371,13 +410,14 @@ def fetch_x(max_pages=20, pause=0.8):
 
 
 def symbol_list(con, min_mentions=2):
+    """Return tracked symbols ordered by mention count, excluding benchmark indices."""
     rows = con.execute("""
         select symbol from mentions
         group by symbol
         having count(*) >= ?
         order by count(*) desc, symbol
     """, (min_mentions,)).fetchall()
-    return [r[0] for r in rows]
+    return [r[0] for r in rows if r[0] not in BENCHMARK_SYMBOLS]
 
 
 def yahoo_chart(symbol, start, end, max_retries=3):
@@ -1085,14 +1125,304 @@ def fetch_fundamentals(min_mentions: int = 2, pause: float = 1.0) -> None:
     con.close()
 
 
+# ---------------------------------------------------------------------------
+# Benchmarks ingestion (R3-2)
+# ---------------------------------------------------------------------------
+
+def fetch_benchmarks(days_back: int = 730) -> None:
+    """
+    Fetch ~2 years of daily OHLCV for SPY, SOXX, QQQ into the prices table.
+
+    Idempotent incremental: skips existing dates.  Uses yfinance (v1.5.1).
+    Benchmark symbols are defined in BENCHMARK_SYMBOLS and are excluded from
+    all universe queries (symbol_list, snapshot, hit-rate, /api/symbols).
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        print("[benchmarks] yfinance is not installed — cannot fetch benchmarks.", file=sys.stderr)
+        return
+
+    con = connect()
+    total_inserted = 0
+    today = dt.datetime.now(dt.timezone.utc)
+
+    try:
+        for symbol in sorted(BENCHMARK_SYMBOLS):
+            try:
+                # Determine incremental start date
+                row = con.execute(
+                    "select max(date) from prices where symbol=?", (symbol,)
+                ).fetchone()
+                latest_date_str = row[0] if row else None
+
+                if latest_date_str:
+                    latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(
+                        tzinfo=dt.timezone.utc
+                    )
+                    days_diff = (today - latest_dt).days
+                    if days_diff <= 1:
+                        print(f"benchmark {symbol} - already up to date (latest: {latest_date_str})")
+                        continue
+                    start_date = (latest_dt + dt.timedelta(days=1)).date()
+                    print(f"benchmark {symbol} - incremental from {start_date}")
+                else:
+                    start_date = (today - dt.timedelta(days=days_back)).date()
+                    print(f"benchmark {symbol} - full fetch from {start_date}")
+
+                end_date = (today + dt.timedelta(days=2)).date()
+                tk = yf.Ticker(symbol)
+                hist = tk.history(
+                    start=start_date.isoformat(),
+                    end=end_date.isoformat(),
+                    interval="1d",
+                    auto_adjust=True,
+                )
+
+                if hist is None or hist.empty:
+                    print(f"  {symbol}: no data returned")
+                    continue
+
+                inserted = 0
+                for idx, bar_row in hist.iterrows():
+                    try:
+                        date_str = idx.date().isoformat()
+                    except AttributeError:
+                        date_str = str(idx)[:10]
+
+                    close_v = bar_row.get("Close")
+                    if close_v is None:
+                        continue
+                    try:
+                        close_f = float(close_v)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(close_f) or close_f <= 0:
+                        continue
+
+                    def _safe(v):
+                        if v is None:
+                            return None
+                        try:
+                            f = float(v)
+                            return f if math.isfinite(f) and f > 0 else None
+                        except (TypeError, ValueError):
+                            return None
+
+                    open_f  = _safe(bar_row.get("Open"))
+                    high_f  = _safe(bar_row.get("High"))
+                    low_f   = _safe(bar_row.get("Low"))
+                    vol_v   = bar_row.get("Volume")
+                    vol_i   = int(vol_v) if vol_v is not None else None
+
+                    con.execute(
+                        """insert or replace into prices(symbol, date, open, high, low, close, volume)
+                           values (?, ?, ?, ?, ?, ?, ?)""",
+                        (symbol, date_str, open_f, high_f, low_f, close_f, vol_i),
+                    )
+                    inserted += 1
+
+                con.commit()
+                print(f"  {symbol}: {inserted} bars inserted/updated")
+                total_inserted += inserted
+                time.sleep(0.5)
+
+            except Exception as exc:
+                print(f"  {symbol}: failed — {exc}", file=sys.stderr)
+
+        print(f"[benchmarks] Done — {total_inserted} total bars inserted/updated.")
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Analyst estimates ingestion (R3-3)
+# ---------------------------------------------------------------------------
+
+def fetch_estimates(min_mentions: int = 2, pause: float = 1.0) -> None:
+    """
+    Fetch analyst price targets and EPS estimates via yfinance for all tracked
+    symbols (excluding BENCHMARK_SYMBOLS).
+
+    Data sources used (yfinance 1.5.1 confirmed):
+      - tk.info: targetMeanPrice, targetMedianPrice, targetHighPrice,
+                 targetLowPrice, numberOfAnalystOpinions, recommendationKey,
+                 recommendationMean
+      - tk.earnings_estimate: avg EPS for 0q / +1q / 0y periods
+      - tk.eps_revisions: upLast30days / downLast30days for 0q
+
+    All missing fields → NULL.  Per-symbol try/except for graceful degradation.
+    Idempotent upsert per symbol.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        print("[estimates] yfinance is not installed — cannot fetch estimates.", file=sys.stderr)
+        return
+
+    con = connect()
+    now_str = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    symbols = symbol_list(con, min_mentions)
+
+    if not symbols:
+        print("[estimates] No symbols found — run fetch-x first.")
+        con.close()
+        return
+
+    print(f"[estimates] Processing {len(symbols)} symbols…")
+    total_upserted = 0
+
+    for symbol in symbols:
+        row: dict = {
+            "target_mean":            None,
+            "target_median":          None,
+            "target_high":            None,
+            "target_low":             None,
+            "n_analysts":             None,
+            "recommendation_key":     None,
+            "recommendation_mean":    None,
+            "eps_estimate_current_q": None,
+            "eps_estimate_next_q":    None,
+            "eps_estimate_current_y": None,
+            "up_revisions_30d":       None,
+            "down_revisions_30d":     None,
+        }
+
+        try:
+            tk = yf.Ticker(symbol)
+            info = tk.info or {}
+
+            # Price targets and recommendation from .info
+            def _fv(key):
+                """Return float value from info or None."""
+                v = info.get(key)
+                if v is None:
+                    return None
+                try:
+                    f = float(v)
+                    return f if math.isfinite(f) else None
+                except (TypeError, ValueError):
+                    return None
+
+            row["target_mean"]         = _fv("targetMeanPrice")
+            row["target_median"]       = _fv("targetMedianPrice")
+            row["target_high"]         = _fv("targetHighPrice")
+            row["target_low"]          = _fv("targetLowPrice")
+            row["recommendation_mean"] = _fv("recommendationMean")
+
+            n_op = info.get("numberOfAnalystOpinions")
+            if n_op is not None:
+                try:
+                    row["n_analysts"] = int(n_op)
+                except (TypeError, ValueError):
+                    pass
+
+            rkey = info.get("recommendationKey")
+            if rkey:
+                row["recommendation_key"] = str(rkey).strip()
+
+            # EPS estimates from earnings_estimate DataFrame
+            try:
+                ee = tk.earnings_estimate
+                if ee is not None and not ee.empty and "avg" in ee.columns:
+                    def _ee_val(period_key):
+                        if period_key in ee.index:
+                            v = ee.loc[period_key, "avg"]
+                            try:
+                                f = float(v)
+                                return f if math.isfinite(f) else None
+                            except (TypeError, ValueError):
+                                return None
+                        return None
+                    row["eps_estimate_current_q"] = _ee_val("0q")
+                    row["eps_estimate_next_q"]    = _ee_val("+1q")
+                    row["eps_estimate_current_y"] = _ee_val("0y")
+            except Exception as exc_ee:
+                print(f"  [estimates] {symbol}: earnings_estimate error: {exc_ee}", file=sys.stderr)
+
+            # Revision direction from eps_revisions DataFrame
+            try:
+                er = tk.eps_revisions
+                if er is not None and not er.empty:
+                    period_key = "0q" if "0q" in er.index else (er.index[0] if len(er.index) > 0 else None)
+                    if period_key is not None:
+                        def _er_int(col):
+                            if col in er.columns:
+                                v = er.loc[period_key, col]
+                                try:
+                                    return int(float(v))
+                                except (TypeError, ValueError):
+                                    return None
+                            return None
+                        row["up_revisions_30d"]   = _er_int("upLast30days")
+                        row["down_revisions_30d"] = _er_int("downLast30days")
+            except Exception as exc_er:
+                print(f"  [estimates] {symbol}: eps_revisions error: {exc_er}", file=sys.stderr)
+
+            non_null = sum(1 for v in row.values() if v is not None)
+            print(f"  [estimates] {symbol}: fetched ({non_null}/12 fields non-null)")
+
+        except Exception as exc:
+            print(f"  [estimates] {symbol}: {exc} — storing NULLs", file=sys.stderr)
+
+        # Idempotent upsert
+        try:
+            con.execute(
+                """insert into analyst_estimates
+                   (symbol, target_mean, target_median, target_high, target_low,
+                    n_analysts, recommendation_key, recommendation_mean,
+                    eps_estimate_current_q, eps_estimate_next_q, eps_estimate_current_y,
+                    up_revisions_30d, down_revisions_30d, updated_at)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   on conflict(symbol) do update set
+                       target_mean=excluded.target_mean,
+                       target_median=excluded.target_median,
+                       target_high=excluded.target_high,
+                       target_low=excluded.target_low,
+                       n_analysts=excluded.n_analysts,
+                       recommendation_key=excluded.recommendation_key,
+                       recommendation_mean=excluded.recommendation_mean,
+                       eps_estimate_current_q=excluded.eps_estimate_current_q,
+                       eps_estimate_next_q=excluded.eps_estimate_next_q,
+                       eps_estimate_current_y=excluded.eps_estimate_current_y,
+                       up_revisions_30d=excluded.up_revisions_30d,
+                       down_revisions_30d=excluded.down_revisions_30d,
+                       updated_at=excluded.updated_at""",
+                (
+                    symbol,
+                    row["target_mean"], row["target_median"],
+                    row["target_high"], row["target_low"],
+                    row["n_analysts"], row["recommendation_key"],
+                    row["recommendation_mean"],
+                    row["eps_estimate_current_q"], row["eps_estimate_next_q"],
+                    row["eps_estimate_current_y"],
+                    row["up_revisions_30d"], row["down_revisions_30d"],
+                    now_str,
+                ),
+            )
+            con.commit()
+            total_upserted += 1
+        except Exception as exc_db:
+            print(f"  [estimates] {symbol}: DB error {exc_db}", file=sys.stderr)
+
+        time.sleep(pause)
+
+    print(f"[estimates] Done — {total_upserted} symbols upserted.")
+    con.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Ingest Serenity X posts, symbols and Yahoo prices into SQLite.")
-    ap.add_argument("command", choices=["fetch-x", "prices", "all", "stats", "stocktwits", "news", "fundamentals"])
+    ap.add_argument("command", choices=[
+        "fetch-x", "prices", "all", "stats", "stocktwits", "news", "fundamentals",
+        "benchmarks", "estimates",
+    ])
     ap.add_argument("--max-pages", type=int, default=20)
     ap.add_argument("--days", type=int, default=420)
+    ap.add_argument("--days-back", type=int, default=730, help="History days for benchmarks fetch")
     ap.add_argument("--min-mentions", type=int, default=2)
     ap.add_argument("--symbol", help="Single symbol for stocktwits subcommand")
-    ap.add_argument("--pause", type=float, default=1.0, help="Seconds between StockTwits requests")
+    ap.add_argument("--pause", type=float, default=1.0, help="Seconds between requests")
     args = ap.parse_args()
     if args.command in {"fetch-x", "all"}:
         fetch_x(args.max_pages)
@@ -1109,6 +1439,10 @@ def main():
         fetch_news(min_mentions=args.min_mentions, pause=args.pause)
     if args.command == "fundamentals":
         fetch_fundamentals(min_mentions=args.min_mentions, pause=args.pause)
+    if args.command == "benchmarks":
+        fetch_benchmarks(days_back=args.days_back)
+    if args.command == "estimates":
+        fetch_estimates(min_mentions=args.min_mentions, pause=args.pause)
     if args.command == "stats":
         con = connect()
         try:
@@ -1118,6 +1452,12 @@ def main():
             print("news_sentiment", con.execute("select count(*) from news_sentiment").fetchone()[0])
             print("news", con.execute("select count(*) from news").fetchone()[0])
             print("fundamentals", con.execute("select count(*) from fundamentals").fetchone()[0])
+            ae_cnt = 0
+            try:
+                ae_cnt = con.execute("select count(*) from analyst_estimates").fetchone()[0]
+            except Exception:
+                pass
+            print("analyst_estimates", ae_cnt)
             for row in con.execute("select symbol, count(*) c, min(mentioned_at), max(mentioned_at) from mentions group by symbol order by c desc, symbol"):
                 print(dict(row))
         finally:
