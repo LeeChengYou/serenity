@@ -42,8 +42,8 @@
         <div id="symbols" class="symbols"></div>
       </aside>
 
-      <!-- ── Chart + signal panel ── -->
-      <section class="panel chart-panel">
+      <!-- ── Main chart + decision panel ── -->
+      <section class="panel main-panel">
         <div class="chart-head">
           <div>
             <p class="eyebrow">price x mention timeline</p>
@@ -51,46 +51,96 @@
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
             <div class="meta-strip" id="activeMeta"></div>
-            <!-- Task C: copy link button -->
             <button id="copyLinkBtn" onclick="copyLink()" title="Copy shareable link" class="copy-link-btn">⎘ Copy Link</button>
           </div>
         </div>
 
-        <div class="tabs" style="padding: 0 16px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 8px;">
-          <button class="active" id="tabChartBtn" onclick="switchDetailTab('chart')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">📈 價格走勢圖</button>
-          <button id="tabScorecardBtn" onclick="switchDetailTab('scorecard')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">🎯 供應鏈瓶頸分析</button>
-          <button id="tabDossierBtn" onclick="switchDetailTab('dossier')" style="font-size: 12px; padding: 4px 10px; border-radius: 999px;">📋 經理人分析</button>
+        <!-- Tab nav -->
+        <div class="main-tab-bar">
+          <button class="active" id="tabChartBtn" onclick="switchDetailTab('chart')">📈 價格走勢圖</button>
+          <button id="tabScorecardBtn" onclick="switchDetailTab('scorecard')">🎯 供應鏈瓶頸分析</button>
+          <button id="tabDossierBtn" onclick="switchDetailTab('dossier')">📋 經理人分析</button>
         </div>
 
-        <!-- Task B: Signal panel (populated by renderSignalPanel) -->
+        <!-- Signal panel (shown across all tabs) -->
         <div id="signalPanel" class="signal-panel" style="display: none;"></div>
 
-        <!-- Chart view -->
+        <!-- ── Chart view ── -->
         <div id="chartView" style="flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto;">
-          <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
-          <!-- Task A: RSI sub-chart -->
-          <div id="rsiWrap" class="rsi-wrap" style="display: none;">
-            <div class="rsi-label">RSI (14)</div>
-            <canvas id="rsiChart"></canvas>
+
+          <!-- Chart controls: indicator toggles + subchart + time range -->
+          <div class="chart-controls">
+            <div class="ctrl-group">
+              <span class="ctrl-label">指標</span>
+              <button id="indEMA20" class="ind-btn active" data-ind="ema20" onclick="toggleIndicator('ema20')">EMA 20</button>
+              <button id="indEMA50" class="ind-btn active" data-ind="ema50" onclick="toggleIndicator('ema50')">EMA 50</button>
+              <button id="indBB"    class="ind-btn active" data-ind="bb"    onclick="toggleIndicator('bb')">布林帶</button>
+              <button id="indVol"   class="ind-btn active" data-ind="vol"   onclick="toggleIndicator('vol')">成交量</button>
+            </div>
+            <div class="ctrl-group">
+              <span class="ctrl-label">子圖</span>
+              <button id="subRSI"  class="sub-btn active" data-sub="rsi"  onclick="setSubchart('rsi')">RSI</button>
+              <button id="subMACD" class="sub-btn"        data-sub="macd" onclick="setSubchart('macd')">MACD</button>
+              <button id="subNone" class="sub-btn"        data-sub="none" onclick="setSubchart('none')">無</button>
+            </div>
+            <div class="ctrl-group range-group">
+              <button class="range-btn" data-range="1M"  onclick="setTimeRange('1M')">1M</button>
+              <button class="range-btn" data-range="3M"  onclick="setTimeRange('3M')">3M</button>
+              <button class="range-btn" data-range="6M"  onclick="setTimeRange('6M')">6M</button>
+              <button class="range-btn active" data-range="1Y" onclick="setTimeRange('1Y')">1Y</button>
+              <button class="range-btn" data-range="ALL" onclick="setTimeRange('ALL')">ALL</button>
+            </div>
           </div>
+
+          <!-- Main candlestick chart (lightweight-charts renders here) -->
+          <div id="priceChartWrap" class="price-chart-wrap">
+            <div id="chartTooltip" class="chart-tooltip" style="display:none;"></div>
+          </div>
+
+          <!-- Sub-chart: RSI or MACD -->
+          <div id="subChartWrap" class="sub-chart-wrap" style="display:none;">
+            <div id="subChartLabel" class="sub-chart-label">RSI (14)</div>
+            <div id="subChartContainer" style="width:100%; height:100%;"></div>
+          </div>
+
+          <!-- Correlated symbols -->
           <div id="neighbors" class="neighbors"></div>
-        </div>
 
-        <!-- Dossier (Manager View) — R-3 -->
-        <div id="dossierView" style="display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 16px;">
-          <div id="dossierContent"></div>
-        </div>
+          <!-- Fundamentals card -->
+          <div id="fundamentalsCard" class="info-card">
+            <div class="info-card-head">📊 基本面數據</div>
+            <div id="fundamentalsContent" class="fundamentals-grid">
+              <p class="placeholder-text">資料尚未抓取</p>
+            </div>
+          </div>
 
-        <!-- Scorecard view -->
+          <!-- News panel -->
+          <div id="newsPanel" class="info-card">
+            <div class="info-card-head">📰 個股新聞</div>
+            <div id="newsContent" class="news-content">
+              <p class="placeholder-text">資料尚未抓取</p>
+            </div>
+          </div>
+
+          <!-- X posts evidence accordion (collapsed by default) -->
+          <details id="evidenceAccordion" class="evidence-accordion">
+            <summary class="evidence-summary">
+              X 貼文證據
+              <span id="evidenceCount" class="evidence-count"></span>
+            </summary>
+            <div id="feed" class="feed feed-accordion"></div>
+          </details>
+
+        </div><!-- /#chartView -->
+
+        <!-- ── Scorecard view ── -->
         <div id="scorecardView" style="display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 16px;">
-          <!-- Placeholder if no data -->
           <div id="scorecardPlaceholder" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; color: var(--muted); padding: 20px;">
             <p style="font-size: 15px; font-weight: bold; margin-bottom: 6px;">🎯 尚無此個股的定性瓶頸記分卡</p>
             <button id="generateScorecardBtn" onclick="triggerScorecardGeneration()" style="font-size: 12px; font-weight: bold; background: var(--green); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin: 10px 0; outline: none;">⚡ 立即產生 AI 供應鏈瓶頸分析</button>
             <p style="font-size: 10px; max-width: 320px; color: var(--muted); margin-top: 10px;">或在終端機手動運行以下命令寫入資料庫：</p>
             <code id="scorecardCmdHelp" style="display: block; margin-top: 4px; padding: 6px 12px; background: rgba(0,0,0,0.05); border-radius: 6px; font-family: monospace; font-size: 11px; color: var(--ink); text-align: left; word-break: break-all;">python scripts/integrated_scorer.py TSM --scorecard data/scorecard_template.json</code>
           </div>
-          <!-- Real content if data exists -->
           <div id="scorecardContent" style="display: none; grid-template-columns: 260px 1fr; gap: 16px; height: 100%;">
             <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 1px solid var(--line); padding-right: 16px;">
               <canvas id="scorecardRadar" style="max-height: 220px; max-width: 220px;"></canvas>
@@ -108,7 +158,13 @@
             </div>
           </div>
         </div>
-      </section>
+
+        <!-- ── Dossier view ── -->
+        <div id="dossierView" style="display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 16px;">
+          <div id="dossierContent"></div>
+        </div>
+
+      </section><!-- /.main-panel -->
 
       <!-- ── AI Chat panel ── -->
       <section class="panel chat-panel">
@@ -147,15 +203,7 @@
           <button id="chatSend">傳送</button>
         </div>
       </section>
-    </section>
-
-    <section class="panel feed-panel reveal delay-3">
-      <div class="panel-head">
-        <h2>Latest Opinion Tape</h2>
-        <span>最新提及时间与内容</span>
-      </div>
-      <div id="feed" class="feed"></div>
-    </section>
+    </section><!-- /.workbench -->
   </main>
 
   <!-- Task D: Mobile bottom navigation bar -->
@@ -178,7 +226,10 @@
     </button>
   </nav>
 
+  <!-- Chart.js (scorecard radar only) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+  <!-- Lightweight Charts (candlestick price chart) -->
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
