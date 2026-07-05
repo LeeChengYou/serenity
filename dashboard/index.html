@@ -30,6 +30,7 @@
     <nav class="global-page-nav reveal">
       <button class="active" data-page="dashboard" onclick="switchGlobalPage('dashboard')">📊 儀表板</button>
       <button data-page="hitrate" onclick="switchGlobalPage('hitrate')">📈 命中率</button>
+      <button data-page="arena" onclick="switchGlobalPage('arena')">🤖 經理人競技場</button>
     </nav>
 
     <section class="kpis reveal delay-1" id="kpis"></section>
@@ -37,6 +38,53 @@
     <!-- Hit-rate page (global, not per-symbol) — hidden by default -->
     <section id="hitrateView" class="hitrate-view" style="display:none;">
       <p class="placeholder-text" style="padding:8px 0;">命中率資料載入中...</p>
+    </section>
+
+    <!-- V6 Arena page — hidden by default -->
+    <section id="arenaView" class="arena-view" style="display:none;">
+      <div class="arena-disclaimer">
+        <strong>模擬資金・非投資建議</strong>
+        ── 本競技場為 paper trading（虛擬資金 + 真實市場價格），不連接任何券商，不執行任何真實交易。
+      </div>
+
+      <!-- 排行榜 -->
+      <div class="arena-section">
+        <h2 class="arena-section-title">🏆 月度排行榜</h2>
+        <div class="arena-month-selector">
+          <label>月份：<input type="month" id="arenaMonthPicker" /></label>
+          <button onclick="loadArena()">重新載入</button>
+        </div>
+        <div id="arenaLeaderboard">
+          <p class="placeholder-text">載入中...</p>
+        </div>
+      </div>
+
+      <!-- NAV 曲線 -->
+      <div class="arena-section">
+        <h2 class="arena-section-title">📈 NAV 走勢</h2>
+        <div id="arenaNavChart">
+          <p class="placeholder-text">載入中...</p>
+        </div>
+      </div>
+
+      <!-- 交易日誌 -->
+      <div class="arena-section">
+        <h2 class="arena-section-title">📋 交易日誌</h2>
+        <div class="arena-agent-selector">
+          <label>Agent：<select id="arenaAgentSelect" onchange="loadArenaTrades()"><option value="">-- 選擇 --</option></select></label>
+        </div>
+        <div id="arenaTradesLog">
+          <p class="placeholder-text">請選擇 Agent</p>
+        </div>
+      </div>
+
+      <!-- 反思檔案室 -->
+      <div class="arena-section">
+        <h2 class="arena-section-title">🗂 反思檔案室</h2>
+        <div id="arenaReflections">
+          <p class="placeholder-text">載入中...</p>
+        </div>
+      </div>
     </section>
 
     <section class="workbench reveal delay-2">
