@@ -1211,80 +1211,105 @@ def _last_non_none(series: list):
     return None
 
 
+def _benchmark_block(con, symbol: str):
+    """EMA200 stance for one benchmark ETF: {"close","ema200","above"} or None."""
+    try:
+        closes = [r[0] for r in con.execute(
+            "select close from prices where symbol=? and close is not null order by date",
+            (symbol,),
+        )]
+        if len(closes) < 200 or _compute_ema is None:
+            return None
+        ema200 = _last_non_none(_compute_ema(closes, 200))
+        if ema200 is None:
+            return None
+        return {
+            "close": round(closes[-1], 4),
+            "ema200": round(ema200, 4),
+            "above": closes[-1] > ema200,
+        }
+    except Exception:
+        return None
+
+
 def regime_payload(con) -> dict:
     """
-    GET /api/regime
+    GET /api/regime  (contract: REQUIREMENTS_V3.md R3-2)
 
-    Computes market regime from SPY EMA50 and EMA200 stored in the prices table.
-
-    Regime rule:
-      bull:    SPY_close > EMA200  AND  EMA50 > EMA200
-      bear:    SPY_close < EMA200  AND  EMA50 < EMA200
-      neutral: mixed (one above, one below)
-      unknown: benchmark data missing or insufficient bars
+    Regime rule (spec):
+      bull:    SPY>EMA200 AND SOXX>EMA200 AND >50% of universe above EMA50
+      bear:    SPY<EMA200 OR SOXX<EMA200*0.97
+      neutral: everything else
+      unknown: benchmark data missing/insufficient
 
     Returns:
-      {"regime", "spy_close", "spy_ema50", "spy_ema200", "as_of", ["note"]}
+      {"as_of","regime","spy":{close,ema200,above},"soxx":{...},"qqq":{...},
+       "universe_above_ema50_pct","note"}
     """
     as_of = datetime.now().strftime("%Y-%m-%d")
     base = {
-        "regime": "unknown",
-        "spy_close": None,
-        "spy_ema50": None,
-        "spy_ema200": None,
         "as_of": as_of,
-        "note": "缺乏基準指數（SPY）資料，無法判斷市場環境。請先執行 `python scripts/ingest.py benchmarks` 更新資料。",
+        "regime": "unknown",
+        "spy": None, "soxx": None, "qqq": None,
+        "universe_above_ema50_pct": None,
+        "note": "缺乏基準指數資料，無法判斷市場環境。請先執行 `python scripts/ingest.py benchmarks`。",
     }
 
     try:
-        bars = [dict(r) for r in con.execute(
-            "select date, open, high, low, close, volume from prices where symbol='SPY' order by date"
-        )]
+        spy  = _benchmark_block(con, "SPY")
+        soxx = _benchmark_block(con, "SOXX")
+        qqq  = _benchmark_block(con, "QQQ")
 
-        if not bars:
-            return base
+        # Universe breadth: % of non-benchmark symbols above their EMA50
+        univ_pct = None
+        try:
+            syms = [r[0] for r in con.execute(
+                "select distinct symbol from prices "
+                "where symbol not in ('SPY','SOXX','QQQ')"
+            )]
+            above = total = 0
+            for sym in syms:
+                closes = [r[0] for r in con.execute(
+                    "select close from prices where symbol=? and close is not null order by date",
+                    (sym,),
+                )]
+                if len(closes) < 50 or _compute_ema is None:
+                    continue
+                ema50 = _last_non_none(_compute_ema(closes, 50))
+                if ema50 is None:
+                    continue
+                total += 1
+                if closes[-1] > ema50:
+                    above += 1
+            if total >= 10:
+                univ_pct = round(above / total, 4)
+        except Exception as exc:
+            print(f"[regime] universe breadth failed: {exc}")
 
-        closes = [b["close"] for b in bars if b.get("close") is not None]
+        if spy is None or soxx is None:
+            return {**base, "spy": spy, "soxx": soxx, "qqq": qqq,
+                    "universe_above_ema50_pct": univ_pct}
 
-        if len(closes) < 200:
-            return {
-                **base,
-                "spy_close": closes[-1] if closes else None,
-                "note": f"SPY 資料不足200根K棒（現有 {len(closes)}），無法計算 EMA200，無法判斷市場環境。",
-            }
-
-        if _compute_ema is None:
-            return {**base, "spy_close": closes[-1], "note": "指標模組載入失敗，無法計算 EMA。"}
-
-        ema50_series  = _compute_ema(closes, 50)
-        ema200_series = _compute_ema(closes, 200)
-
-        spy_close = closes[-1]
-        ema50     = _last_non_none(ema50_series)
-        ema200    = _last_non_none(ema200_series)
-
-        if ema50 is None or ema200 is None:
-            return {
-                **base,
-                "spy_close": spy_close,
-                "note": "EMA 計算失敗，無法判斷市場環境。",
-            }
-
-        if spy_close > ema200 and ema50 > ema200:
-            regime = "bull"
-        elif spy_close < ema200 and ema50 < ema200:
+        if not spy["above"] or soxx["close"] < soxx["ema200"] * 0.97:
             regime = "bear"
+            note = ("空頭環境：大盤或半導體基準跌破長期均線。動能訊號（OVERBOUGHT）"
+                    "在此環境未經驗證，買進建議信心度應下調。")
+        elif spy["above"] and soxx["above"] and univ_pct is not None and univ_pct > 0.5:
+            regime = "bull"
+            note = ("多頭環境：基準指數站上 EMA200 且過半個股站上 EMA50。"
+                    "既有樣本外驗證主要來自此環境。")
         else:
             regime = "neutral"
+            note = ("中性/轉折環境：基準與個股廣度訊號不一致。"
+                    "建議降低倉位並提高對訊號的懷疑度。")
 
-        result = {
-            "regime": regime,
-            "spy_close": round(spy_close, 4),
-            "spy_ema50": round(ema50, 4),
-            "spy_ema200": round(ema200, 4),
+        return {
             "as_of": as_of,
+            "regime": regime,
+            "spy": spy, "soxx": soxx, "qqq": qqq,
+            "universe_above_ema50_pct": univ_pct,
+            "note": note,
         }
-        return result
 
     except Exception as exc:
         print(f"[regime_payload] error: {exc}")
@@ -1362,15 +1387,14 @@ def _compute_live_hitrate(con) -> dict:
             date_univ_med[date_str] = None
         return date_univ_med[date_str]
 
-    # Per-signal buckets
+    # Per-signal buckets + per-call records (for the recent_calls contract field)
     _EXCLUDED_SIGNALS = {"HOLD", "NEUTRAL", "OVERBOUGHT"}
     from collections import defaultdict
-    buckets: dict = defaultdict(lambda: {"n": 0, "matured": 0, "hits": 0})
-    all_signals_seen: set = set()
+    buckets: dict = defaultdict(lambda: {"n": 0, "matured": 0, "hits": 0, "excess": [], "fwds": []})
+    calls: list = []
 
     for row in rows:
         sym, date_str, sig, entry_close = row[0], row[1], row[2], row[3]
-        all_signals_seen.add(sig)
 
         if sig in _EXCLUDED_SIGNALS:
             continue
@@ -1388,21 +1412,40 @@ def _compute_live_hitrate(con) -> dict:
             exit_row = None
 
         exit_close = exit_row[0] if exit_row else None
-        if exit_close is None:
-            continue  # not yet matured
+        univ_med = _get_univ_median(date_str) if exit_close is not None else None
 
-        fwd_return = exit_close / entry_close - 1.0
-        univ_med = _get_univ_median(date_str)
-        if univ_med is None:
-            continue  # can't assess
+        fwd_return = None
+        hit = None
+        if exit_close is not None and univ_med is not None:
+            fwd_return = exit_close / entry_close - 1.0
+            buckets[sig]["matured"] += 1
+            buckets[sig]["excess"].append(fwd_return - univ_med)
+            buckets[sig]["fwds"].append(fwd_return)
+            if sig in ("BUY_TRIGGER", "BUY_WATCH"):
+                hit = fwd_return > univ_med
+            elif sig == "EXIT_ALERT":
+                hit = fwd_return < univ_med
+            if hit:
+                buckets[sig]["hits"] += 1
 
-        buckets[sig]["matured"] += 1
-        if sig in ("BUY_TRIGGER", "BUY_WATCH"):
-            if fwd_return > univ_med:
-                buckets[sig]["hits"] += 1
-        elif sig == "EXIT_ALERT":
-            if fwd_return < univ_med:
-                buckets[sig]["hits"] += 1
+        calls.append({
+            "symbol": sym,
+            "date": date_str,
+            "signal": sig,
+            "close_then": entry_close,
+            "close_now": exit_close,
+            "fwd_return": round(fwd_return, 4) if fwd_return is not None else None,
+            "universe_return": round(univ_med, 4) if univ_med is not None else None,
+            "hit": hit,
+            "source": "live",
+        })
+
+    def _median(vals):
+        if not vals:
+            return None
+        s = sorted(vals)
+        m = len(s) // 2
+        return s[m] if len(s) % 2 == 1 else (s[m - 1] + s[m]) / 2
 
     summary_rows = []
     for sig, b in buckets.items():
@@ -1410,21 +1453,27 @@ def _compute_live_hitrate(con) -> dict:
         hits = b["hits"]
         insufficient = n_matured < 10
         win_rate = None if (insufficient or n_matured == 0) else round(hits / n_matured, 4)
+        med_exc = _median(b["excess"])
+        med_fwd = _median(b["fwds"])
         summary_rows.append({
             "signal":      sig,
             "n":           b["n"],
             "n_matured":   n_matured,
             "hits":        hits if not insufficient else None,
             "win_rate":    win_rate,
+            "median_fwd_return_30d": round(med_fwd, 4) if (med_fwd is not None and not insufficient) else None,
+            "vs_universe": round(med_exc, 4) if (med_exc is not None and not insufficient) else None,
             "insufficient": insufficient,
         })
 
     # Sort by signal name for deterministic output
     summary_rows.sort(key=lambda x: x["signal"])
+    calls.sort(key=lambda c: c["date"], reverse=True)
 
     return {
         "label":   "live (signal_history, 開始日期 2026-07-04)",
         "rows":    summary_rows,
+        "calls":   calls,
         "n_total": len(rows),
         "as_of":   as_of,
     }
@@ -1468,10 +1517,10 @@ def _compute_reconstructed_hitrate(con, db_path: Path) -> dict:
     if not max_price_date:
         return {**empty, "note": "No price data available for reconstruction."}
 
-    # Check cache
+    # Check cache (v2: rows carry vs_universe median excess)
     try:
         cached = con.execute(
-            "select cache_json, max_price_date from hitrate_cache where cache_key='reconstructed'"
+            "select cache_json, max_price_date from hitrate_cache where cache_key='reconstructed_v2'"
         ).fetchone()
         if cached and cached[1] == max_price_date:
             try:
@@ -1545,7 +1594,7 @@ def _compute_reconstructed_hitrate(con, db_path: Path) -> dict:
 
     # Per-signal accumulators
     from collections import defaultdict
-    buckets: dict = defaultdict(lambda: {"n_total": 0, "returns": [], "hits": 0})
+    buckets: dict = defaultdict(lambda: {"n_total": 0, "returns": [], "excess": [], "hits": 0})
     total_obs = 0
 
     for cutoff_str in cutoffs:
@@ -1577,10 +1626,18 @@ def _compute_reconstructed_hitrate(con, db_path: Path) -> dict:
             buckets[sig]["n_total"] += 1
             if hret is not None:
                 buckets[sig]["returns"].append(hret)
+                buckets[sig]["excess"].append(hret - univ_med)
                 if sig in ("BUY_TRIGGER", "BUY_WATCH") and hret > univ_med:
                     buckets[sig]["hits"] += 1
                 elif sig == "EXIT_ALERT" and hret < univ_med:
                     buckets[sig]["hits"] += 1
+
+    def _median(vals):
+        if not vals:
+            return None
+        s = sorted(vals)
+        m = len(s) // 2
+        return s[m] if len(s) % 2 == 1 else (s[m - 1] + s[m]) / 2
 
     summary_rows = []
     for sig, b in buckets.items():
@@ -1588,12 +1645,16 @@ def _compute_reconstructed_hitrate(con, db_path: Path) -> dict:
         hits = b["hits"]
         insufficient = n < 10
         win_rate = None if (insufficient or n == 0) else round(hits / n, 4)
+        med_exc = _median(b["excess"])
+        med_fwd = _median(b["returns"])
         summary_rows.append({
             "signal":      sig,
             "n":           b["n_total"],
             "n_with_exit": n,
             "hits":        hits if not insufficient else None,
             "win_rate":    win_rate,
+            "median_fwd_return_30d": round(med_fwd, 4) if (med_fwd is not None and not insufficient) else None,
+            "vs_universe": round(med_exc, 4) if (med_exc is not None and not insufficient) else None,
             "insufficient": insufficient,
         })
 
@@ -1611,7 +1672,7 @@ def _compute_reconstructed_hitrate(con, db_path: Path) -> dict:
     try:
         con.execute(
             """insert into hitrate_cache(cache_key, max_price_date, cache_json, computed_at)
-               values ('reconstructed', ?, ?, ?)
+               values ('reconstructed_v2', ?, ?, ?)
                on conflict(cache_key) do update set
                    max_price_date=excluded.max_price_date,
                    cache_json=excluded.cache_json,
@@ -1657,10 +1718,47 @@ def hitrate_payload(con) -> dict:
                 "error": str(exc),
             }
 
+    # Assemble the spec contract (REQUIREMENTS_V3.md R3-1):
+    # {"as_of","live_since","summary":[...rows with source...],"recent_calls":[...]}
+    live_since = None
+    try:
+        row = con.execute("select min(date) from signal_history").fetchone()
+        live_since = row[0] if row else None
+    except Exception:
+        pass
+
+    summary = []
+    for r in live.get("rows", []):
+        summary.append({
+            "signal": r.get("signal"),
+            "n": r.get("n_matured", r.get("n")),
+            "n_pending": (r.get("n") or 0) - (r.get("n_matured") or 0),
+            "median_fwd_return_30d": r.get("median_fwd_return_30d"),
+            "win_rate": r.get("win_rate"),
+            "vs_universe": r.get("vs_universe"),
+            "insufficient": r.get("insufficient", False),
+            "source": "live",
+        })
+    for r in recon.get("rows", []):
+        summary.append({
+            "signal": r.get("signal"),
+            "n": r.get("n_with_exit", r.get("n")),
+            "n_pending": 0,
+            "median_fwd_return_30d": r.get("median_fwd_return_30d"),
+            "win_rate": r.get("win_rate"),
+            "vs_universe": r.get("vs_universe"),
+            "insufficient": r.get("insufficient", False),
+            "source": "reconstructed",
+        })
+
     return {
         "as_of": as_of,
+        "live_since": live_since,
+        "summary": summary,
+        "recent_calls": live.get("calls", [])[:50],
+        # Kept for transparency/debugging: full per-source detail
         "sources": {
-            "live":          live,
+            "live":          {k: v for k, v in live.items() if k != "calls"},
             "reconstructed": recon,
         },
     }
@@ -2099,9 +2197,10 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
                 # R3-2: regime context
                 "market_regime": current_regime,
                 "regime_data": {
-                    "spy_close": (regime_section or {}).get("spy_close"),
-                    "spy_ema50": (regime_section or {}).get("spy_ema50"),
-                    "spy_ema200": (regime_section or {}).get("spy_ema200"),
+                    "spy": (regime_section or {}).get("spy"),
+                    "soxx": (regime_section or {}).get("soxx"),
+                    "universe_above_ema50_pct": (regime_section or {}).get("universe_above_ema50_pct"),
+                    "note": (regime_section or {}).get("note"),
                 } if regime_section else None,
                 # R3-3: analyst estimates
                 "analyst_estimates": {

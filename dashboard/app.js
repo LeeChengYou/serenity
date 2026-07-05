@@ -647,26 +647,26 @@ function renderEstimates(d) {
   const dash   = v => (v == null ? '—' : v);
   const fmtUSD = v => (v == null ? '—' : `$${Number(v).toFixed(2)}`);
   const fmtPct = v => (v == null ? '' : `(${Number(v) > 0 ? '+' : ''}${(Number(v) * 100).toFixed(1)}%)`);
-  const tgtColor = d.target_pct != null ? (d.target_pct > 0 ? '#1a6640' : '#b84000') : 'inherit';
-  const revMap = { up: { icon: '↑', color: '#1a6640' }, down: { icon: '↓', color: '#b84000' }, flat: { icon: '→', color: 'var(--muted)' } };
-  const rev = revMap[d.revision] || { icon: '—', color: 'var(--muted)' };
+  const tgtColor = d.target_vs_price != null ? (d.target_vs_price > 0 ? '#1a6640' : '#b84000') : 'inherit';
+  const revMap = { up: { icon: '↑', color: '#1a6640' }, down: { icon: '↓', color: '#b84000' }, neutral: { icon: '→', color: 'var(--muted)' } };
+  const rev = revMap[d.revision_direction] || { icon: '—', color: 'var(--muted)' };
   el.innerHTML = `
     <div class="estimates-grid">
       <div class="est-item est-item--wide">
         <span class="fund-label">評級</span>
-        <span class="fund-val">${escapeHtml(d.rec_label || '—')}&nbsp;<span style="font-size:10px;color:var(--muted);">(mean ${d.rec_mean != null ? Number(d.rec_mean).toFixed(2) : '—'})</span></span>
+        <span class="fund-val">${escapeHtml(d.recommendation_key || '—')}&nbsp;<span style="font-size:10px;color:var(--muted);">(mean ${d.recommendation_mean != null ? Number(d.recommendation_mean).toFixed(2) : '—'})</span></span>
       </div>
       <div class="est-item">
         <span class="fund-label">分析師數</span>
-        <span class="fund-val">${dash(d.analyst_count)}</span>
+        <span class="fund-val">${dash(d.n_analysts)}</span>
       </div>
       <div class="est-item">
         <span class="fund-label">目標價均值</span>
-        <span class="fund-val">${fmtUSD(d.target_mean)}&nbsp;<span style="font-size:10px;color:${tgtColor};">${fmtPct(d.target_pct)}</span></span>
+        <span class="fund-val">${fmtUSD(d.target_mean)}&nbsp;<span style="font-size:10px;color:${tgtColor};">${fmtPct(d.target_vs_price)}</span></span>
       </div>
       <div class="est-item">
-        <span class="fund-label">EPS 預估</span>
-        <span class="fund-val">${d.eps_estimate != null ? Number(d.eps_estimate).toFixed(2) : '—'}</span>
+        <span class="fund-label">EPS 預估（本季）</span>
+        <span class="fund-val">${d.eps_estimate_current_q != null ? Number(d.eps_estimate_current_q).toFixed(2) : '—'}</span>
       </div>
       <div class="est-item">
         <span class="fund-label">修正方向</span>
@@ -776,18 +776,17 @@ function renderRegimeBadge(data) {
   el.textContent = `${r.icon} ${r.label}`;
   el.className   = `regime-badge ${r.cls}`;
 
-  const details = data.details || {};
-  const lines   = [];
-  ['SPY', 'SOXX', 'QQQ'].forEach(sym => {
-    const d = details[sym];
+  const lines = [];
+  [['SPY', data.spy], ['SOXX', data.soxx], ['QQQ', data.qqq]].forEach(([sym, d]) => {
     if (!d) return;
-    const pos   = d.above_ema200 ? '上方 ✓' : '下方 ✗';
-    const price = d.price  != null ? `$${Number(d.price).toFixed(2)}`  : '—';
+    const pos   = d.above ? '上方 ✓' : '下方 ✗';
+    const price = d.close  != null ? `$${Number(d.close).toFixed(2)}`  : '—';
     const ema   = d.ema200 != null ? `$${Number(d.ema200).toFixed(2)}` : '—';
     lines.push(`${sym}: ${price}  EMA200 ${ema}  ${pos}`);
   });
+  if (data.universe_above_ema50_pct != null)
+    lines.push(`個股廣度：${(Number(data.universe_above_ema50_pct) * 100).toFixed(0)}% 站上 EMA50`);
   if (data.note) lines.push(`\n注：${data.note}`);
-  if (data.live_since) lines.push(`實時紀錄自 ${data.live_since}`);
   el.title = lines.length ? lines.join('\n') : '市場狀態';
 }
 
@@ -904,7 +903,7 @@ function sigBadgeClass(sig) {
 function renderHitRateSummaryTable(summary) {
   const rows = summary.map(s => {
     const wr  = s.win_rate != null ? `${(Number(s.win_rate) * 100).toFixed(0)}%` : '樣本不足';
-    const ret = s.median_30d_return != null ? `${(Number(s.median_30d_return) * 100).toFixed(1)}%` : '—';
+    const ret = s.median_fwd_return_30d != null ? `${(Number(s.median_fwd_return_30d) * 100).toFixed(1)}%` : '—';
     const vu  = s.vs_universe != null ? `${(Number(s.vs_universe) * 100).toFixed(1)}%` : '—';
     const src = s.source === 'live'
       ? '<span class="hr-badge hr-live">實時</span>'
@@ -963,7 +962,7 @@ async function loadChanges() {
       if (!r.ok) throw new Error(r.status);
       return r.json();
     });
-    _changesData = data.changes || data || [];
+    _changesData = data.items || data.changes || (Array.isArray(data) ? data : []);
     applyChangeBadgesToSymbols();
   } catch (_) {
     _changesData = [];
