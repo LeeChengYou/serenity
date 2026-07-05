@@ -43,3 +43,8 @@ Thumbs.db
 x_curl/*
 !x_curl/.gitkeep
 data/browser_profile/
+
+# V6 Arena generated files (runtime artifacts, not for version control)
+data/agents/
+data/briefings/
+data/app.db
