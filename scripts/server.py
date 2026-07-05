@@ -1075,7 +1075,7 @@ def news_payload(con, symbol: str) -> dict:
                limit 20""",
             (
                 f'["{symbol}"]',          # exact single-element array
-                f'"{symbol}",%',          # first element
+                f'["{symbol}",%',         # first element
                 f'%,"{symbol}",%',        # middle element
                 f'%,"{symbol}"]',         # last element
             ),
