@@ -105,6 +105,15 @@ python scripts/crawler.py fetch-sources
 | C-5 | 多股票比較視圖 /compare | ⬜ | SPEC F-12.4 |
 | C-6 | 多 X 帳號三角驗證 | ⬜ | 打破單一帳號依賴 |
 
+### Phase E — AI 經理人競技場（V6，規格見 REQUIREMENTS_V6.md）
+
+| # | 項目 | 狀態 | 備註 |
+|---|------|------|------|
+| E-1 | P1 引擎骨架：schema、簡報生成器、交易引擎、GeminiBackend、單 agent 一日循環 | ⬜ | dry-run 驗收 |
+| E-2 | P2 九 agent 日循環：3 領域 × 3 風格、robotics 池擴充、J-10 排程 | ⬜ | 依賴 E-1 |
+| E-3 | P3 月度閉環：結算/公開信/反思/策略卡迭代、J-11 排程、回放測試 | ⬜ | 依賴 E-2 |
+| E-4 | P4 前端競技場頁 + API 四端點 + AntigravityBackend 介面 | ⬜ | 依賴 E-3 |
+
 ### Phase D — 工程品質（持續）
 
 | # | 項目 | 狀態 | 備註 |
@@ -112,6 +121,15 @@ python scripts/crawler.py fetch-sources
 | D-1 | scratch/ 測試轉 pytest + GitHub Actions CI | ⬜ | 防回歸 |
 | D-2 | 修快照 RSI 解析脆弱性（從條件文字撈→直接回傳欄位） | ⬜ | 工程師 B 自標風險 |
 | D-3 | VPS 部署（nginx+systemd）供手機隨時存取 | ⬜ | 可選 |
+
+---
+
+## 二之一、已知問題（待修，2026-07-06 記錄）
+
+| # | 問題 | 現象 | 初步方向 |
+|---|------|------|----------|
+| K-1 | `crawler.py login` 被 X 安全警告擋下 | 「這個瀏覽器或應用程式可能有安全疑慮，建議您改用其他瀏覽器」，無法完成登入 | Playwright 的 Chromium 被 X 偵測為自動化瀏覽器；候選解法：改用 channel="msedge"/"chrome" 系統瀏覽器、補 user-agent 與 navigator.webdriver 隱藏 |
+| K-2 | 前端「專家觀點」卡與「譯 中」翻譯按鈕未顯示 | `/api/expert-views` 有 87 筆資料、`/api/translate` 後端正常，但網頁上看不到卡片與按鈕 | 疑似瀏覽器快取舊版 index.html/app.js，或選中的個股無 13F 對應（卡片無資料時設計為隱藏）；待以 DevTools 確認 DOM 與 fetch 結果 |
 
 ---
 
