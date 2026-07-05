@@ -110,10 +110,11 @@ class KeyManager:
     Cooling:  first 429 → 60 s; 3rd 429 within 10 min → until next Pacific midnight.
     """
     _AFFINITY = {
-        "interactive": "KEY_1",
-        "batch":       "KEY_2",
-        "translate":   "KEY_3",
-        "memory":      "KEY_1",
+        "interactive":  "KEY_1",
+        "batch":        "KEY_2",
+        "translate":    "KEY_3",
+        "memory":       "KEY_1",
+        "agent_arena":  "KEY_2",
     }
     _OVERFLOW = "KEY_4"
     _ALL_LABELS = ["KEY_1", "KEY_2", "KEY_3", "KEY_4"]
@@ -596,6 +597,20 @@ class Handler(SimpleHTTPRequestHandler):
             if path.startswith("/api/expert-views/"):
                 symbol = unquote(path.rsplit("/", 1)[-1]).upper()
                 return expert_views_payload(con, symbol)
+            # V6 Arena API routes
+            if path == "/api/arena/leaderboard":
+                month = (query.get("month") or [datetime.now().strftime("%Y-%m")])[0]
+                return arena_leaderboard_payload(con, month)
+            if path == "/api/arena/nav":
+                month = (query.get("month") or [datetime.now().strftime("%Y-%m")])[0]
+                return arena_nav_payload(con, month)
+            if path == "/api/arena/trades":
+                agent = (query.get("agent") or [""])[0]
+                month = (query.get("month") or [datetime.now().strftime("%Y-%m")])[0]
+                return arena_trades_payload(con, agent, month)
+            if path == "/api/arena/reflections":
+                month = (query.get("month") or [datetime.now().strftime("%Y-%m")])[0]
+                return arena_reflections_payload(con, month)
         finally:
             con.close()
         return {"error": "unknown api"}
@@ -2842,6 +2857,143 @@ def snapshot_signals():
         return inserted
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------
+# V6 Arena API payloads (accept external con for testability)
+# ---------------------------------------------------------------------------
+
+def arena_leaderboard_payload(con, month: str) -> dict:
+    """
+    GET /api/arena/leaderboard?month=YYYY-MM
+    Returns leaderboard for the given month sorted by ret_pct descending.
+    """
+    try:
+        rows = con.execute(
+            "select agent_id, "
+            "       a.domain, "
+            "       m.ret_pct, m.mdd_pct, m.n_trades, "
+            "       m.rank_domain, m.rank_overall "
+            "from agent_monthly m "
+            "join agents a on a.id = m.agent_id "
+            "where m.month = ? "
+            "order by m.rank_overall",
+            (month,)
+        ).fetchall()
+    except Exception:
+        rows = []
+
+    result_rows = []
+    for r in rows:
+        result_rows.append({
+            "agent_id":     r["agent_id"],
+            "domain":       r["domain"],
+            "ret_pct":      r["ret_pct"],
+            "mdd_pct":      r["mdd_pct"],
+            "n_trades":     r["n_trades"],
+            "rank_domain":  r["rank_domain"],
+            "rank_overall": r["rank_overall"],
+        })
+    return {"month": month, "rows": result_rows}
+
+
+def arena_nav_payload(con, month: str) -> dict:
+    """
+    GET /api/arena/nav?month=YYYY-MM
+    Returns NAV time series for all agents in the month, plus SPY benchmark.
+    """
+    series = {}
+    try:
+        agents = con.execute("select distinct agent_id from agent_nav_daily").fetchall()
+        for ag in agents:
+            agent_id = ag["agent_id"]
+            rows = con.execute(
+                "select date, nav from agent_nav_daily "
+                "where agent_id=? and date like ? order by date",
+                (agent_id, month + "%")
+            ).fetchall()
+            if rows:
+                series[agent_id] = [{"date": r["date"], "nav": r["nav"]} for r in rows]
+    except Exception:
+        pass
+
+    # SPY benchmark — normalized to 3000 starting point for comparability
+    benchmark = {}
+    try:
+        spy_rows = con.execute(
+            "select date, close from prices where symbol='SPY' and date like ? order by date",
+            (month + "%",)
+        ).fetchall()
+        if spy_rows:
+            base_close = spy_rows[0]["close"]
+            spy_series = []
+            for r in spy_rows:
+                normalized = (r["close"] / base_close) * 3000.0 if base_close else r["close"]
+                spy_series.append({"date": r["date"], "nav": normalized})
+            benchmark["SPY"] = spy_series
+    except Exception:
+        pass
+
+    return {"series": series, "benchmark": benchmark}
+
+
+def arena_trades_payload(con, agent_id: str, month: str) -> dict:
+    """
+    GET /api/arena/trades?agent=<id>&month=YYYY-MM
+    Returns all trades for an agent in the given month.
+    """
+    try:
+        rows = con.execute(
+            "select decided_date, exec_date, symbol, side, qty, price, usd, "
+            "       reason, status, rejected_reason "
+            "from agent_trades "
+            "where agent_id=? and decided_date like ? "
+            "order by id",
+            (agent_id, month + "%")
+        ).fetchall()
+    except Exception:
+        rows = []
+
+    trades = []
+    for r in rows:
+        trades.append({
+            "decided_date":   r["decided_date"],
+            "exec_date":      r["exec_date"],
+            "symbol":         r["symbol"],
+            "side":           r["side"],
+            "qty":            r["qty"],
+            "price":          r["price"],
+            "usd":            r["usd"],
+            "reason":         r["reason"],
+            "status":         r["status"],
+            "rejected_reason": r["rejected_reason"],
+        })
+    return {"trades": trades}
+
+
+def arena_reflections_payload(con, month: str) -> dict:
+    """
+    GET /api/arena/reflections?month=YYYY-MM
+    Returns reflection data for all agents in the given month.
+    """
+    try:
+        rows = con.execute(
+            "select agent_id, public_letter, reflection_md, strategy_after "
+            "from agent_monthly where month=? order by agent_id",
+            (month,)
+        ).fetchall()
+    except Exception:
+        rows = []
+
+    result_rows = []
+    for r in rows:
+        result_rows.append({
+            "agent_id":      r["agent_id"],
+            "public_letter": r["public_letter"],
+            "reflection_md": r["reflection_md"],
+            "strategy_after": r["strategy_after"],
+        })
+    return {"rows": result_rows}
 
 
 def run_background_ingest():
