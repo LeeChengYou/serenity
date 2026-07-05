@@ -683,6 +683,58 @@ function renderEstimates(d) {
   `;
 }
 
+// ── R5-3: Expert views card ───────────────────────────────────────────────────
+
+async function loadExpertViews(symbol) {
+  const card = $('expertViewsCard');
+  if (!card) return;
+  // Hide card initially; show only when items exist
+  card.style.display = 'none';
+  try {
+    const data = await fetch(`/api/expert-views/${encodeURIComponent(symbol)}`).then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    if (!data || data.error || !data.items || !data.items.length) return;
+    renderExpertViews(data);
+    card.style.display = '';
+  } catch (_) {
+    // Graceful degradation — card stays hidden
+  }
+}
+
+function renderExpertViews(data) {
+  const el = $('expertViewsContent');
+  if (!el) return;
+  const credBadge = cred => {
+    const map = { official: '官方', aggregator: '聚合', individual: '個人' };
+    const cls = { official: 'badge success', aggregator: 'badge info', individual: 'badge' };
+    const label = map[cred] || cred;
+    const klass = cls[cred] || 'badge';
+    return `<span class="${klass}" style="font-size:10px;padding:2px 6px;border-radius:4px;">${escapeHtml(label)}</span>`;
+  };
+  const items = (data.items || []).map(it => {
+    const is13f = (it.source || '').includes('edgar') || (it.source || '').includes('13f');
+    const delayWarning = is13f
+      ? `<div style="font-size:10px;color:#b84000;margin-top:2px;">⚠ 13F 申報有 45 天延遲，資料非即時</div>`
+      : '';
+    return `
+      <div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+          ${credBadge(it.credibility)}
+          <span style="font-size:11px;color:var(--muted);">${escapeHtml(it.author || it.source || '')}</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:auto;">${dateOnly(it.published_at)}</span>
+        </div>
+        <div style="font-size:12px;line-height:1.45;">${escapeHtml(it.text || '')}</div>
+        ${delayWarning}
+        ${it.url ? `<a href="${escapeHtml(it.url)}" target="_blank" rel="noreferrer" style="font-size:10px;color:var(--blue);">查看申報原文 →</a>` : ''}
+      </div>
+    `;
+  }).join('');
+  el.innerHTML = items
+    + (data.as_of ? `<div style="font-size:10px;color:var(--muted);margin-top:6px;text-align:right;">截至 ${data.as_of}</div>` : '');
+}
+
 // ── News panel ────────────────────────────────────────────────────────────────
 
 async function loadNews(symbol) {
@@ -1354,6 +1406,7 @@ async function selectSymbol(symbol, { pushState = true } = {}) {
   // Load new panels (graceful degradation)
   loadFundamentals(symbol);
   loadEstimates(symbol);   // R3-3
+  loadExpertViews(symbol); // R5-3
   loadNews(symbol);
 }
 

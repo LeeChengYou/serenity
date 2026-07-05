@@ -396,6 +396,25 @@ def _init_schema(con):
             created_at     text not null
         )
     """)
+    # R5-2: expert_views — credible manager holdings from EDGAR 13F etc (idempotent)
+    con.execute("""
+        create table if not exists expert_views (
+            id           integer primary key autoincrement,
+            source       text not null,
+            author       text,
+            title        text,
+            text         text not null,
+            url          text unique not null,
+            published_at text,
+            symbols      text,
+            credibility  text not null default 'individual',
+            fetched_at   text not null
+        )
+    """)
+    con.execute("""
+        create index if not exists idx_expert_views_published
+            on expert_views(published_at desc)
+    """)
     for idx_name, tbl_name, col in [
         ("idx_mentions_symbol", "mentions", "symbol"),
         ("idx_prices_symbol_date", "prices", "symbol, date"),
@@ -570,6 +589,13 @@ class Handler(SimpleHTTPRequestHandler):
                     return {"memories": rows}
                 except Exception as e:
                     return {"error": str(e)}
+            # R5-3: Expert views — all symbols (latest 20)
+            if path == "/api/expert-views":
+                return expert_views_all_payload(con)
+            # R5-3: Expert views — per symbol
+            if path.startswith("/api/expert-views/"):
+                symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+                return expert_views_payload(con, symbol)
         finally:
             con.close()
         return {"error": "unknown api"}
@@ -2180,6 +2206,84 @@ def estimates_payload(con, symbol: str) -> dict:
     except Exception as exc:
         print(f"[estimates_payload] {symbol}: {exc}")
         return base
+
+
+# ---------------------------------------------------------------------------
+# R5-3: Expert views API helpers
+# ---------------------------------------------------------------------------
+
+def _expert_views_row_to_item(r) -> dict:
+    return {
+        "source":       r["source"],
+        "author":       r["author"],
+        "title":        r["title"],
+        "text":         r["text"],
+        "url":          r["url"],
+        "published_at": r["published_at"],
+        "credibility":  r["credibility"],
+    }
+
+
+def expert_views_payload(con, symbol: str) -> dict:
+    """
+    GET /api/expert-views/<SYM>
+    Returns up to 10 items mentioning this symbol, newest first.
+    Returns empty structure when table absent (graceful degradation).
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    empty = {"symbol": symbol, "items": [], "as_of": as_of}
+
+    if not _table_exists(con, "expert_views"):
+        return empty
+
+    try:
+        sym_json = symbol  # we search inside the JSON array string
+        rows = con.execute(
+            """select source, author, title, text, url, published_at, credibility
+               from expert_views
+               where symbols like ?
+                  or symbols like ?
+                  or symbols like ?
+                  or symbols like ?
+               order by published_at desc
+               limit 10""",
+            (
+                f'["{sym_json}"]',
+                f'["{sym_json}",%',
+                f'%,"{sym_json}",%',
+                f'%,"{sym_json}"]',
+            ),
+        ).fetchall()
+        items = [_expert_views_row_to_item(r) for r in rows]
+        return {"symbol": symbol, "items": items, "as_of": as_of}
+    except Exception as exc:
+        print(f"[expert_views_payload] {symbol}: {exc}")
+        return empty
+
+
+def expert_views_all_payload(con) -> dict:
+    """
+    GET /api/expert-views
+    Returns latest 20 items across all symbols, newest first.
+    """
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    empty = {"items": [], "as_of": as_of}
+
+    if not _table_exists(con, "expert_views"):
+        return empty
+
+    try:
+        rows = con.execute(
+            """select source, author, title, text, url, published_at, credibility
+               from expert_views
+               order by published_at desc
+               limit 20"""
+        ).fetchall()
+        items = [_expert_views_row_to_item(r) for r in rows]
+        return {"items": items, "as_of": as_of}
+    except Exception as exc:
+        print(f"[expert_views_all_payload]: {exc}")
+        return empty
 
 
 # ---------------------------------------------------------------------------
