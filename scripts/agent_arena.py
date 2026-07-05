@@ -436,7 +436,8 @@ def build_briefing(
             [cutoff_dt] + sym_params + [news_count]
         ).fetchall()
 
-        as_of_dt = datetime.fromisoformat(as_of.replace("Z", ""))
+        # hrs_ago 以 as_of 當日收盤（23:59:59）為基準，否則當日新聞會算出負值
+        as_of_dt = datetime.fromisoformat(as_of) + timedelta(hours=23, minutes=59, seconds=59)
         for row in news_rows:
             pub = row["published_at"] or ""
             try:
@@ -444,9 +445,12 @@ def build_briefing(
                 hrs_ago = max(0, int((as_of_dt - pub_dt).total_seconds() / 3600))
             except Exception:
                 hrs_ago = 0
-            syms_field = row["symbols"] or "MACRO"
-            # Pick first symbol
-            first_sym = syms_field.split(",")[0].strip().upper() or "MACRO"
+            # symbols 欄是 JSON 陣列字串（如 '["MU"]'），需解析而非直接切字串
+            try:
+                sym_list = json.loads(row["symbols"] or "[]")
+            except Exception:
+                sym_list = []
+            first_sym = sym_list[0].strip().upper() if sym_list else "MACRO"
             title = (row["title"] or "")[:100]
             lines.append(f"{first_sym}|{hrs_ago}|{title}")
 
@@ -571,6 +575,18 @@ def build_briefing(
     if not pos_lines:
         lines.append("（空倉）")
 
+    # ── YOUR_REJECTED_ORDERS ── 最近被引擎拒絕的單（學習訊號）
+    rej_rows = con.execute(
+        "select decided_date, side, symbol, rejected_reason from agent_trades "
+        "where agent_id=? and status='rejected' and decided_date < ? "
+        "order by id desc limit 3",
+        (agent_id, as_of)
+    ).fetchall()
+    if rej_rows:
+        lines.append("\n## YOUR_REJECTED_ORDERS  (最近被拒的單與原因，請修正下單格式/規則)")
+        for r in rej_rows:
+            lines.append(f"{r['decided_date']}  {r['side']}  {r['symbol']}  → {r['rejected_reason']}")
+
     # ── YOUR_MEMORY_DIGEST ──
     mem_rows = con.execute(
         "select content from agent_memory where agent_id=? order by id desc limit 3",
@@ -658,7 +674,16 @@ class GeminiBackend(AgentBackend):
         system = (
             "你是一位 AI 基金經理人，負責管理模擬資金投資組合（paper trading，非真實投資）。\n"
             "根據市場簡報與你的策略卡，做出今日買賣決策。\n"
-            "輸出嚴格 JSON 格式：{\"actions\":[...],\"watch\":[...],\"memory_note\":\"...\"}"
+            "輸出嚴格 JSON，欄位名稱必須完全一致，不得增減：\n"
+            '{"actions":[{"side":"BUY","symbol":"NVDA","usd":600,"reason":"進場理由（必填，<=100字）"},\n'
+            '            {"side":"SELL","symbol":"MU","pct":50,"reason":"出場理由（必填，<=100字）"}],\n'
+            ' "watch":["觀察股，最多3檔"],\n'
+            ' "memory_note":"給明天的自己的備忘（<=50字）"}\n'
+            "規則：\n"
+            "- side 只能是 BUY 或 SELL；BUY 必須用 usd（美元金額），SELL 必須用 pct（持倉百分比 1-100）\n"
+            "- 只能交易簡報 PRICES 區塊列出的股票；每日最多 3 筆；單一持股上限 NAV 的 40%\n"
+            "- 沒有好機會時 actions 給空陣列 []（持有不動也是合法決策）\n"
+            "- 違反規則的單會被引擎拒絕並記錄原因"
         )
         prompt = f"## 策略卡\n{strategy}\n\n## 市場簡報\n{briefing}"
         try:
@@ -736,9 +761,14 @@ def _get_nav(con: sqlite3.Connection, agent_id: str, as_of: str) -> float:
 
 
 def _fill_pending_orders(con: sqlite3.Connection, as_of: str) -> None:
-    """Fill all pending orders using today's open price with slippage."""
+    """Fill all pending orders using today's open price with slippage.
+
+    只撮合 decided_date < as_of 的單——決策日之前的價格絕不能
+    回頭撮合之後的決策（時間紀律防護）。
+    """
     pending = con.execute(
-        "select * from agent_trades where status='pending'",
+        "select * from agent_trades where status='pending' and decided_date < ?",
+        (as_of,),
     ).fetchall()
 
     for trade in pending:
@@ -855,11 +885,19 @@ def _validate_and_record_actions(
     evaluated_count = 0  # Actions evaluated so far (1-indexed against MAX_TRADES_PER_DAY)
 
     for action in actions:
-        side = (action.get("side") or "").upper()
-        symbol = (action.get("symbol") or "").upper()
-        reason = action.get("reason") or ""
-        usd = float(action.get("usd") or 0.0)
-        pct = float(action.get("pct") or 0.0)
+        if not isinstance(action, dict):
+            action = {}
+        side = (str(action.get("side") or "")).upper()
+        symbol = (str(action.get("symbol") or "")).upper()
+        reason = str(action.get("reason") or "")
+        try:
+            usd = float(action.get("usd") or 0.0)
+        except (TypeError, ValueError):
+            usd = 0.0
+        try:
+            pct = float(action.get("pct") or 0.0)
+        except (TypeError, ValueError):
+            pct = 0.0
 
         # Daily cap: 4th action onwards automatically rejected
         if evaluated_count >= MAX_TRADES_PER_DAY:
@@ -880,6 +918,10 @@ def _validate_and_record_actions(
         if side == "BUY":
             if symbol not in pool:
                 rejected_reason = f"symbol {symbol} not in domain pool"
+            elif usd <= 0:
+                rejected_reason = "BUY 缺少有效 usd 欄位（美元金額必須 > 0）"
+            elif not reason.strip():
+                rejected_reason = "缺少 reason（每筆交易必須附理由）"
             elif usd > MAX_POS_PCT * nav:
                 rejected_reason = f"exceeds 40% NAV cap ({usd:.0f} > {MAX_POS_PCT * nav:.0f})"
             elif usd > cash:
@@ -910,6 +952,10 @@ def _validate_and_record_actions(
             ).fetchone()
             if pos_row is None or pos_row["qty"] <= 0:
                 rejected_reason = f"no position in {symbol}"
+            elif pct <= 0 or pct > 100:
+                rejected_reason = f"SELL pct 必須為 1-100（收到 {pct}）"
+            elif not reason.strip():
+                rejected_reason = "缺少 reason（每筆交易必須附理由）"
 
             if rejected_reason:
                 con.execute(
@@ -926,6 +972,18 @@ def _validate_and_record_actions(
                     "values (?, ?, ?, ?, ?, ?, 'pending', ?)",
                     (agent_id, decided_date, symbol, side, qty_to_sell, reason, briefing_path)
                 )
+
+        else:
+            # 非 BUY/SELL（含 LLM 自創欄位名如 sym/type/qty）→ 記錄拒單
+            # 作為下次簡報的學習訊號，絕不靜默丟棄
+            con.execute(
+                "insert into agent_trades "
+                "(agent_id, decided_date, symbol, side, reason, status, rejected_reason, briefing_path) "
+                "values (?, ?, ?, ?, ?, 'rejected', ?, ?)",
+                (agent_id, decided_date, symbol or "?", side or "?", reason,
+                 "malformed action：side 必須為 BUY/SELL，欄位限 symbol/usd/pct/reason",
+                 briefing_path)
+            )
 
     con.commit()
 
@@ -1298,9 +1356,16 @@ def cmd_migrate(args):
     print("資料庫表遷移完成（冪等）。")
 
 
+def _latest_trading_date(con: sqlite3.Connection) -> str:
+    """prices 表最新交易日（排程於台北早晨執行時，當日美股尚未收盤，
+    以日曆日當 as_of 會導致 pending 單永遠等不到當日開盤價）。"""
+    row = con.execute("select max(date) from prices").fetchone()
+    return row[0] if row and row[0] else datetime.now().strftime("%Y-%m-%d")
+
+
 def cmd_daily(args):
     db_path = args.db or DEFAULT_DB
-    as_of = args.as_of or datetime.now().strftime("%Y-%m-%d")
+    as_of = args.as_of
     only_agents = [a.strip() for a in args.agents.split(",")] if args.agents else None
 
     # Try GeminiBackend unless dry-run
@@ -1318,6 +1383,9 @@ def cmd_daily(args):
     try:
         migrate(con)
         seed_agents(con)
+        if not as_of:
+            as_of = _latest_trading_date(con)
+            print(f"[arena] as_of 未指定，採 prices 最新交易日 {as_of}")
         run_daily(con, as_of, backend, only_agents=only_agents)
     finally:
         con.close()
