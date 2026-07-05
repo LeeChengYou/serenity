@@ -38,3 +38,8 @@ x_curl/*.curl
 Thumbs.db
 .vscode/
 .idea/
+
+# Session cookies and browser profiles (NEVER commit)
+x_curl/*
+!x_curl/.gitkeep
+data/browser_profile/
