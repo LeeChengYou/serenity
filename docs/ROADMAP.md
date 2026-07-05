@@ -113,10 +113,10 @@ python scripts/crawler.py fetch-sources
 
 | # | 項目 | 狀態 | 備註 |
 |---|------|------|------|
-| E-1 | P1 引擎骨架：schema、簡報生成器、交易引擎、GeminiBackend、單 agent 一日循環 | ⬜ | dry-run 驗收 |
-| E-2 | P2 九 agent 日循環：3 領域 × 3 風格、robotics 池擴充、J-10 排程 | ⬜ | 依賴 E-1 |
-| E-3 | P3 月度閉環：結算/公開信/反思/策略卡迭代、J-11 排程、回放測試 | ⬜ | 依賴 E-2 |
-| E-4 | P4 前端競技場頁 + API 四端點 + AntigravityBackend 介面 | ⬜ | 依賴 E-3 |
+| E-1 | P1 引擎骨架：schema、簡報生成器、交易引擎、GeminiBackend、單 agent 一日循環 | ✅ | 驗收測試 70/70（scratch/test_arena_final.py） |
+| E-2 | P2 九 agent 日循環：3 領域 × 3 風格、J-10 排程 | ✅ | live 首跑 2026-07-02 完成，9 筆決策入庫；robotics 池擴充（ISRG 等）待辦 |
+| E-3 | P3 月度閉環：結算/公開信/反思/策略卡迭代、J-11 排程 | ✅ | 引擎+測試完成；首次 live 月結 2026-08-01（J-11） |
+| E-4 | P4 前端競技場頁 + API 四端點 | ✅ | AntigravityBackend adapter 留待後續 |
 
 ### Phase D — 工程品質（持續）
 
