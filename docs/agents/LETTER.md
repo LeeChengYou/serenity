@@ -23,8 +23,11 @@ V6 競技場已上線：9 個 agent、J-10 每日 08:00、J-11 每月 1 日 08:3
 
 ```powershell
 $env:PYTHONIOENCODING = "utf-8"
-sqlite3 data\serenity.sqlite "select max(date) from prices; select max(as_of) from agent_nav_daily; select status, count(*) from agent_trades group by status;"
+sqlite3 data\serenity.sqlite "select max(date) from prices; select max(date) from agent_nav_daily; select status, count(*) from agent_trades group by status;"
 ```
+
+（sqlite3 CLI 來自 anaconda PATH；若不在 PATH，用 Bash 工具跑等價 python 版：
+`PYTHONIOENCODING=utf-8 python -c "import sqlite3;c=sqlite3.connect('data/serenity.sqlite');print(c.execute('select max(date) from prices').fetchone(),c.execute('select max(date) from agent_nav_daily').fetchone(),c.execute('select status,count(*) from agent_trades group by status').fetchall())"`）
 
 prices 落後 >3 個交易日 = J-1 排程死了；agent_nav_daily 落後 prices = J-10 死了；
 rejected 突然暴增 = Gemini 輸出格式又漂移了（去看 rejected_reason）。

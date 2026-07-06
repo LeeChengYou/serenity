@@ -32,7 +32,8 @@
 # 啟動儀表板（server.py 改動需重啟；dashboard/ 靜態檔不用，叫使用者 Ctrl+F5 即可）
 python scripts\server.py --port 8787        # http://127.0.0.1:8787
 
-# 競技場驗收測試（改 agent_arena.py / server.py arena 相關後必跑，期望 70/70）
+# 競技場驗收測試（改 agent_arena.py / server.py arena 相關後必跑）
+# 通過標準：0 failed、exit 0（案例數會演進；2026-07-06 實測為 70/70）
 $env:PYTHONIOENCODING = "utf-8"; python scratch\test_arena_final.py
 
 # 語法快檢

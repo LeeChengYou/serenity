@@ -23,7 +23,7 @@ opus 發現根因是 fill 缺 `decided_date < as_of` 時間紀律防護——這
 ## 2. 何時算真的完成
 
 **判準**：以下全部成立才能對使用者說「完成」：
-- 驗收測試實跑，輸出數字貼在回報裡（arena = 70/70 + exit 0）。
+- 驗收測試實跑，輸出數字貼在回報裡（arena = 0 failed + exit 0）。
 - 改 server.py → server 重啟過且 curl 過受影響端點看到正確 payload。
 - 改 dashboard/ → 明確告知使用者 Ctrl+F5（快取曾造成「功能消失」的誤報，ROADMAP K-2）。
 - 涉及解析外部輸入（LLM 回應、網路 API）→ 至少一次真實冒煙，不能只靠 mock。

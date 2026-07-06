@@ -48,3 +48,7 @@ data/browser_profile/
 data/agents/
 data/briefings/
 data/app.db
+
+# 制度檔維護協議的備份副本（MAINTENANCE.md 第 2 節）
+*.bak
+*.bak-*
