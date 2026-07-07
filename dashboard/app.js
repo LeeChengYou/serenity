@@ -1631,48 +1631,29 @@ async function loadArena() {
           </tr>`).join('')}
           </tbody>
         </table>`;
-      // Populate agent selector
+      // Populate agent selector; auto-select the top-ranked agent so the
+      // trades log shows data immediately instead of "請選擇 Agent".
       if (selectEl) {
         const existing = new Set(Array.from(selectEl.options).map(o => o.value));
         rows.forEach(r => {
           if (!existing.has(r.agent_id)) {
             const opt = document.createElement('option');
             opt.value = r.agent_id;
-            opt.textContent = r.agent_id;
+            opt.textContent = `${r.agent_id}（${r.ret_pct != null ? (r.ret_pct >= 0 ? '+' : '') + r.ret_pct.toFixed(1) + '%' : '-'}）`;
             selectEl.appendChild(opt);
           }
         });
+        if (!selectEl.value && rows.length) {
+          selectEl.value = rows[0].agent_id;
+          loadArenaTrades();
+        }
       }
     }
   }
 
-  // Render NAV chart (simple SVG line chart)
+  // Render NAV chart as a real SVG line chart (排行榜走勢折線圖)
   if (navEl) {
-    const series = nv.series || {};
-    const benchmark = nv.benchmark || {};
-    const allSeries = Object.assign({}, series, benchmark);
-    const keys = Object.keys(allSeries);
-    if (!keys.length) {
-      navEl.innerHTML = '<p class="placeholder-text">本月尚無 NAV 資料</p>';
-    } else {
-      const colors = ['#4a90d9','#e07b39','#5cb85c','#9b59b6','#f39c12','#1abc9c','#e74c3c','#34495e','#95a5a6','#c0392b'];
-      let tableHtml = `<table class="arena-nav-table"><thead><tr><th>日期</th>${keys.map(k => `<th>${escapeHtml(k)}</th>`).join('')}</tr></thead><tbody>`;
-      // Gather all dates
-      const datesSet = new Set();
-      keys.forEach(k => (allSeries[k] || []).forEach(p => datesSet.add(p.date)));
-      const dates = Array.from(datesSet).sort();
-      dates.forEach(d => {
-        tableHtml += `<tr><td class="arena-mono">${escapeHtml(d)}</td>`;
-        keys.forEach(k => {
-          const pt = (allSeries[k] || []).find(p => p.date === d);
-          const val = pt ? pt.nav.toFixed(2) : '-';
-          tableHtml += `<td class="arena-mono">${val}</td>`;
-        });
-        tableHtml += '</tr>';
-      });
-      tableHtml += '</tbody></table>';
-      navEl.innerHTML = `<div class="arena-nav-legend">${keys.map((k,i) => `<span style="color:${colors[i % colors.length]}">■ ${escapeHtml(k)}</span>`).join(' ')}</div>` + tableHtml;
-    }
+    renderArenaNavChart(navEl, nv.series || {}, nv.benchmark || {});
   }
 
   // Render reflections
@@ -1691,6 +1672,102 @@ async function loadArena() {
   }
 
   _arenaLoaded = true;
+}
+
+// Shared, stable color per series so chart + leaderboard agree
+const ARENA_COLORS = ['#4a90d9','#e07b39','#5cb85c','#9b59b6','#f39c12','#1abc9c','#e74c3c','#16a085','#c0392b'];
+function arenaColorFor(key, index) { return ARENA_COLORS[index % ARENA_COLORS.length]; }
+
+// Draw an SVG line chart of every agent's NAV path plus the SPY benchmark.
+// Hidden series are tracked in a module-level set toggled by clicking the legend.
+const _arenaHidden = new Set();
+function renderArenaNavChart(navEl, series, benchmark) {
+  const agentKeys = Object.keys(series);
+  const benchKeys = Object.keys(benchmark);
+  if (!agentKeys.length && !benchKeys.length) {
+    navEl.innerHTML = '<p class="placeholder-text">本月尚無 NAV 資料</p>';
+    return;
+  }
+
+  // Union of all dates across every series, sorted ascending
+  const datesSet = new Set();
+  agentKeys.forEach(k => (series[k] || []).forEach(p => datesSet.add(p.date)));
+  benchKeys.forEach(k => (benchmark[k] || []).forEach(p => datesSet.add(p.date)));
+  const dates = Array.from(datesSet).sort();
+  const xOf = {};
+  dates.forEach((d, i) => { xOf[d] = i; });
+
+  // Build a unified list: agents first (solid), benchmark last (dashed)
+  const all = [];
+  agentKeys.forEach((k, i) => all.push({ key: k, pts: series[k] || [], color: arenaColorFor(k, i), dashed: false }));
+  benchKeys.forEach((k) => all.push({ key: k, pts: benchmark[k] || [], color: '#888', dashed: true }));
+
+  // y range across visible series
+  let lo = Infinity, hi = -Infinity;
+  all.forEach(s => { if (_arenaHidden.has(s.key)) return; s.pts.forEach(p => { if (p.nav < lo) lo = p.nav; if (p.nav > hi) hi = p.nav; }); });
+  if (!isFinite(lo) || !isFinite(hi)) { lo = 2900; hi = 3100; }
+  if (lo === hi) { lo -= 50; hi += 50; }
+  const pad = (hi - lo) * 0.08 || 50;
+  lo -= pad; hi += pad;
+
+  // SVG geometry
+  const W = 720, H = 320, mL = 56, mR = 16, mT = 16, mB = 34;
+  const plotW = W - mL - mR, plotH = H - mT - mB;
+  const xPix = i => mL + (dates.length <= 1 ? plotW / 2 : (i / (dates.length - 1)) * plotW);
+  const yPix = v => mT + (1 - (v - lo) / (hi - lo)) * plotH;
+
+  // Y gridlines (5 ticks)
+  let grid = '';
+  const TICKS = 5;
+  for (let t = 0; t <= TICKS; t++) {
+    const v = lo + (hi - lo) * (t / TICKS);
+    const y = yPix(v);
+    grid += `<line x1="${mL}" y1="${y.toFixed(1)}" x2="${W - mR}" y2="${y.toFixed(1)}" stroke="#888" stroke-width="0.5" opacity="0.35"/>`;
+    grid += `<text x="${mL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#999">${v.toFixed(0)}</text>`;
+  }
+  // X labels
+  let xlabels = '';
+  dates.forEach((d, i) => {
+    xlabels += `<text x="${xPix(i).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="10" fill="#999">${escapeHtml(d.slice(5))}</text>`;
+  });
+
+  // Series polylines + dots
+  let paths = '';
+  all.forEach(s => {
+    if (_arenaHidden.has(s.key)) return;
+    const pts = (s.pts || []).filter(p => p.date in xOf).sort((a, b) => a.date < b.date ? -1 : 1);
+    if (!pts.length) return;
+    const coords = pts.map(p => `${xPix(xOf[p.date]).toFixed(1)},${yPix(p.nav).toFixed(1)}`);
+    if (coords.length > 1) {
+      paths += `<polyline points="${coords.join(' ')}" fill="none" stroke="${s.color}" stroke-width="1.8"${s.dashed ? ' stroke-dasharray="5 4"' : ''}/>`;
+    }
+    pts.forEach(p => {
+      paths += `<circle cx="${xPix(xOf[p.date]).toFixed(1)}" cy="${yPix(p.nav).toFixed(1)}" r="2.6" fill="${s.color}"><title>${escapeHtml(s.key)} ${escapeHtml(p.date)}: ${p.nav.toFixed(2)}</title></circle>`;
+    });
+  });
+
+  const svg = `<svg viewBox="0 0 ${W} ${H}" class="arena-nav-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="NAV 走勢折線圖">
+    ${grid}
+    <line x1="${mL}" y1="${mT}" x2="${mL}" y2="${H - mB}" stroke="#999" stroke-width="1"/>
+    <line x1="${mL}" y1="${H - mB}" x2="${W - mR}" y2="${H - mB}" stroke="#999" stroke-width="1"/>
+    ${xlabels}
+    ${paths}
+  </svg>`;
+
+  // Clickable legend (toggle visibility)
+  const legend = `<div class="arena-nav-legend">` + all.map(s => {
+    const off = _arenaHidden.has(s.key);
+    return `<span class="arena-legend-item${off ? ' arena-legend-off' : ''}" data-key="${escapeHtml(s.key)}" style="color:${s.color};cursor:pointer;user-select:none;">${s.dashed ? '┄' : '■'} ${escapeHtml(s.key)}</span>`;
+  }).join(' ') + `</div>`;
+
+  navEl.innerHTML = legend + svg;
+  navEl.querySelectorAll('.arena-legend-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const k = el.getAttribute('data-key');
+      if (_arenaHidden.has(k)) _arenaHidden.delete(k); else _arenaHidden.add(k);
+      renderArenaNavChart(navEl, series, benchmark);
+    });
+  });
 }
 
 window.loadArenaTrades = async function() {
@@ -1715,21 +1792,40 @@ window.loadArenaTrades = async function() {
       tradesEl.innerHTML = '<p class="placeholder-text">本月無交易記錄</p>';
       return;
     }
-    tradesEl.innerHTML = `<table class="arena-table">
-      <thead><tr><th>決策日</th><th>成交日</th><th>標的</th><th>方向</th><th>金額</th><th>狀態</th><th>理由</th></tr></thead>
+    const BADGE = {
+      filled:   '<span class="arena-badge arena-badge-filled">成交</span>',
+      pending:  '<span class="arena-badge arena-badge-pending">待成交</span>',
+      rejected: '<span class="arena-badge arena-badge-rejected">拒單</span>',
+    };
+    const nFilled = trades.filter(t => t.status === 'filled').length;
+    const nPending = trades.filter(t => t.status === 'pending').length;
+    const nRejected = trades.filter(t => t.status === 'rejected').length;
+    tradesEl.innerHTML = `<div class="arena-trades-summary">共 ${trades.length} 筆 · 成交 ${nFilled} · 待成交 ${nPending} · 拒單 ${nRejected}</div>
+    <table class="arena-table arena-trades-table">
+      <thead><tr><th>決策日</th><th>成交日</th><th>標的</th><th>方向</th><th>金額/成交</th><th>狀態</th><th>購買依據</th></tr></thead>
       <tbody>
       ${trades.map(t => {
-        const statusBadge = t.status === 'filled'
-          ? '<span class="arena-badge arena-badge-filled">成交</span>'
-          : '<span class="arena-badge arena-badge-rejected">拒單</span>';
+        const statusBadge = BADGE[t.status] || `<span class="arena-badge">${escapeHtml(t.status || '-')}</span>`;
+        // Filled → show exec price × qty; otherwise the ordered USD notional
+        let amount = '-';
+        if (t.status === 'filled' && t.price != null) {
+          amount = `$${Number(t.price).toFixed(2)}${t.qty != null ? ' × ' + Number(t.qty).toFixed(2) : ''}`;
+        } else if (t.usd != null) {
+          amount = `$${Number(t.usd).toFixed(0)}`;
+        } else if (t.qty != null) {
+          amount = `${Number(t.qty).toFixed(2)}sh`;
+        }
+        const reason = t.rejected_reason
+          ? `${escapeHtml(t.reason || '')}<div class="arena-rej-note">拒單原因：${escapeHtml(t.rejected_reason)}</div>`
+          : escapeHtml(t.reason || '');
         return `<tr>
           <td class="arena-mono">${escapeHtml(t.decided_date || '-')}</td>
           <td class="arena-mono">${escapeHtml(t.exec_date || '-')}</td>
           <td class="arena-mono">${escapeHtml(t.symbol || '-')}</td>
-          <td class="arena-mono">${escapeHtml(t.side || '-')}</td>
-          <td class="arena-mono">${t.usd != null ? '$' + Number(t.usd).toFixed(0) : (t.qty != null ? t.qty.toFixed(2) + 'sh' : '-')}</td>
-          <td>${statusBadge}${t.rejected_reason ? `<span class="arena-rej-reason" title="${escapeHtml(t.rejected_reason)}">ⓘ</span>` : ''}</td>
-          <td class="arena-reason">${escapeHtml((t.reason || '').slice(0, 80))}</td>
+          <td class="arena-mono ${t.side === 'SELL' ? 'arena-neg' : 'arena-pos'}">${escapeHtml(t.side || '-')}</td>
+          <td class="arena-mono">${amount}</td>
+          <td>${statusBadge}</td>
+          <td class="arena-reason">${reason || '<span class="arena-muted">—</span>'}</td>
         </tr>`;
       }).join('')}
       </tbody>

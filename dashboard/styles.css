@@ -596,6 +596,32 @@ a { color: var(--blue); text-decoration: none; }
   background: #ffebee;
   color: #c62828;
 }
+.arena-badge-pending {
+  background: #fff8e1;
+  color: #b8860b;
+}
+.arena-nav-svg {
+  width: 100%;
+  height: auto;
+  max-height: 340px;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel, transparent);
+}
+.arena-legend-item { transition: opacity .15s; }
+.arena-legend-off { opacity: .35; text-decoration: line-through; }
+.arena-trades-summary {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.arena-rej-note {
+  color: #c62828;
+  font-size: 11px;
+  margin-top: 3px;
+}
+.arena-muted { color: var(--muted); }
 .arena-rej-reason {
   cursor: help;
   margin-left: 4px;

@@ -2866,35 +2866,74 @@ def snapshot_signals():
 def arena_leaderboard_payload(con, month: str) -> dict:
     """
     GET /api/arena/leaderboard?month=YYYY-MM
-    Returns leaderboard for the given month sorted by ret_pct descending.
+    Live leaderboard computed directly from agent_nav_daily (return vs. the 3000
+    seed) plus filled-trade counts — so it populates every trading day without
+    waiting for month-end settlement (agent_monthly). Values are traceable to real
+    NAV rows; agents with no NAV row for the month are omitted (insufficient data).
     """
+    SEED = 3000.0
     try:
-        rows = con.execute(
-            "select agent_id, "
-            "       a.domain, "
-            "       m.ret_pct, m.mdd_pct, m.n_trades, "
-            "       m.rank_domain, m.rank_overall "
-            "from agent_monthly m "
-            "join agents a on a.id = m.agent_id "
-            "where m.month = ? "
-            "order by m.rank_overall",
-            (month,)
+        agent_rows = con.execute(
+            "select id as agent_id, domain from agents order by id"
         ).fetchall()
     except Exception:
-        rows = []
+        agent_rows = []
 
-    result_rows = []
-    for r in rows:
-        result_rows.append({
-            "agent_id":     r["agent_id"],
-            "domain":       r["domain"],
-            "ret_pct":      r["ret_pct"],
-            "mdd_pct":      r["mdd_pct"],
-            "n_trades":     r["n_trades"],
-            "rank_domain":  r["rank_domain"],
-            "rank_overall": r["rank_overall"],
+    computed = []
+    for a in agent_rows:
+        agent_id = a["agent_id"]
+        navs = con.execute(
+            "select date, nav from agent_nav_daily "
+            "where agent_id=? and date like ? order by date",
+            (agent_id, month + "%")
+        ).fetchall()
+        if not navs:
+            continue
+
+        latest_nav = navs[-1]["nav"]
+        ret_pct = (latest_nav / SEED - 1.0) * 100.0
+
+        # Max drawdown over the month's NAV path (<= 0)
+        peak = None
+        mdd = 0.0
+        for r in navs:
+            v = r["nav"]
+            if peak is None or v > peak:
+                peak = v
+            if peak:
+                dd = (v / peak - 1.0) * 100.0
+                if dd < mdd:
+                    mdd = dd
+
+        # Count filled trades by decision month so this number matches the
+        # trades-log panel (arena_trades_payload also filters on decided_date).
+        n_trades = con.execute(
+            "select count(*) from agent_trades "
+            "where agent_id=? and decided_date like ? and status='filled'",
+            (agent_id, month + "%")
+        ).fetchone()[0]
+
+        computed.append({
+            "agent_id":   agent_id,
+            "domain":     a["domain"],
+            "ret_pct":    ret_pct,
+            "mdd_pct":    mdd,
+            "n_trades":   n_trades,
+            "latest_nav": latest_nav,
         })
-    return {"month": month, "rows": result_rows}
+
+    # Overall rank by return descending
+    computed.sort(key=lambda x: x["ret_pct"], reverse=True)
+    for i, c in enumerate(computed, 1):
+        c["rank_overall"] = i
+
+    # Domain rank (list already ordered by return desc → per-domain order is correct)
+    dom_seen = {}
+    for c in computed:
+        dom_seen[c["domain"]] = dom_seen.get(c["domain"], 0) + 1
+        c["rank_domain"] = dom_seen[c["domain"]]
+
+    return {"month": month, "rows": computed}
 
 
 def arena_nav_payload(con, month: str) -> dict:
@@ -2904,7 +2943,9 @@ def arena_nav_payload(con, month: str) -> dict:
     """
     series = {}
     try:
-        agents = con.execute("select distinct agent_id from agent_nav_daily").fetchall()
+        # Drive off the agents table (same source as the leaderboard) so both
+        # views agree on the agent roster; agents with no NAV row are skipped below.
+        agents = con.execute("select id as agent_id from agents order by id").fetchall()
         for ag in agents:
             agent_id = ag["agent_id"]
             rows = con.execute(
