@@ -90,14 +90,14 @@ def _rewrite_curl_file(path: Path, cookie_str: str, ct0: str) -> bool:
 
     # -b ^"<value>^"  (may span one contiguous run — greedy inside)
     new_text = re.sub(
-        r'(-b \^")([^\^]|\^(?!"))*(\^")',
+        r'(-b \^")(.*?)(\^")(?=\s|$)',
         lambda m: f'{m.group(1)}{cookie_str}{m.group(3)}',
         text,
     )
 
     # x-csrf-token: <value>^"
     new_text = re.sub(
-        r'(x-csrf-token: )([^\^]|\^(?!"))*(\^")',
+        r'(x-csrf-token: )(.*?)(\^")(?=\s|$)',
         lambda m: f'{m.group(1)}{ct0}{m.group(3)}',
         new_text,
     )
