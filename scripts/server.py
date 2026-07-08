@@ -106,18 +106,20 @@ class KeyManager:
       batch       → KEY_2   (scorecard generation)
       translate   → KEY_3   (translation)
       memory      → KEY_1   (memory extraction, lite model)
-    Overflow: KEY_4 used when affinity key is 429-cooling.
-    Cooling:  first 429 → 60 s; 3rd 429 within 10 min → until next Pacific midnight.
+      agent_arena → round-robin across all 4 keys (9 agents spread evenly)
+    Overflow: KEY_4 used when affinity key is 429/503-cooling.
+    Cooling:  first 429/503 → 60 s; 3rd within 10 min → until next Pacific midnight.
     """
     _AFFINITY = {
         "interactive":  "KEY_1",
         "batch":        "KEY_2",
         "translate":    "KEY_3",
         "memory":       "KEY_1",
-        "agent_arena":  "KEY_2",
+        # agent_arena uses round-robin (see _arena_rr_index), not a fixed key
     }
     _OVERFLOW = "KEY_4"
     _ALL_LABELS = ["KEY_1", "KEY_2", "KEY_3", "KEY_4"]
+    _arena_rr_index = 0  # class-level round-robin counter for agent_arena
     _ENV_NAMES  = ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"]
 
     def __init__(self):
@@ -139,7 +141,21 @@ class KeyManager:
         return bool(self._entries)
 
     def _ordered_labels(self, task_class: str) -> list:
-        """Preferred label order: affinity → KEY_4 overflow → remaining."""
+        """Preferred label order for a given task class.
+
+        agent_arena: round-robin starting point rotates across all keys so
+        9 concurrent agents spread their quota load evenly.
+        Others: affinity key first → KEY_4 overflow → remaining.
+        """
+        if task_class == "agent_arena":
+            # Round-robin: each call advances the starting index
+            with self._lock:
+                idx = KeyManager._arena_rr_index % len(self._ALL_LABELS)
+                KeyManager._arena_rr_index += 1
+            # Build order starting from round-robin position
+            rotated = self._ALL_LABELS[idx:] + self._ALL_LABELS[:idx]
+            return [lbl for lbl in rotated if lbl in self._entries]
+
         affinity = self._AFFINITY.get(task_class, "KEY_1")
         order = [affinity]
         if self._OVERFLOW not in order:
@@ -163,8 +179,8 @@ class KeyManager:
                     return entry
             raise ValueError("所有 Gemini API Key 目前均在冷卻中，請稍後再試。")
 
-    def mark_429(self, entry: dict) -> None:
-        """Record a 429 and update cooling state for the given entry."""
+    def _mark_error(self, entry: dict, code: int) -> None:
+        """Shared logic for 429/503: record error and set cooling."""
         with self._lock:
             now = time.time()
             entry["errors_429_today"] += 1
@@ -174,10 +190,18 @@ class KeyManager:
             if len(entry["recent_429s"]) >= 3:
                 cool_ts = self._next_pacific_midnight()
                 entry["cooling_until"] = cool_ts
-                print(f"[KeyManager] {entry['label']}: 3 429s in 10 min → cooling until Pacific midnight")
+                print(f"[KeyManager] {entry['label']}: 3 {code}s in 10 min → cooling until Pacific midnight")
             else:
                 entry["cooling_until"] = now + 60
-                print(f"[KeyManager] {entry['label']}: 429 → cooling 60 s")
+                print(f"[KeyManager] {entry['label']}: HTTP {code} → cooling 60 s")
+
+    def mark_429(self, entry: dict) -> None:
+        """Record a 429 and update cooling state for the given entry."""
+        self._mark_error(entry, 429)
+
+    def mark_503(self, entry: dict) -> None:
+        """Record a 503 and update cooling state (same policy as 429)."""
+        self._mark_error(entry, 503)
 
     def record_call(self, entry: dict) -> None:
         with self._lock:
@@ -267,6 +291,15 @@ def call_gemini(model_name: str, contents: list, system_instruction: str,
                 _key_manager.mark_429(key_entry)
                 tried.add(key_entry["label"])
                 continue  # retry with next key
+            if exc.code == 503:
+                _key_manager.mark_503(key_entry)
+                tried.add(key_entry["label"])
+                try:
+                    # Still try remaining keys; if all exhausted, ValueError is raised
+                    _key_manager.pick_key(task_class, exclude=tried)
+                    continue  # retry with next key
+                except ValueError:
+                    raise exc  # all keys cooling, re-raise original 503
             raise
 
 def db():
