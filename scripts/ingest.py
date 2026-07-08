@@ -232,9 +232,34 @@ def migrate_analyst_estimates(con):
 
 def parse_curl(path: Path):
     text = path.read_text(encoding="utf-8", errors="replace")
-    # Normalize Windows cmd style cURL by stripping carets
-    text = text.replace('^', '')
-    args = [arg for arg in shlex.split(text, posix=True) if arg.strip()]
+    # Normalize Windows cmd style cURL:
+    # 1. Normalize line continuations first
+    t = text.replace('\\\n', ' ').replace('\\\r\n', ' ')
+    
+    # 2. Extract and sanitize the -b cookie value to make it posix-compliant
+    # Matches -b followed by a quoted value: ^"..." or "..."
+    # Using positive lookahead to stop at the next argument or end of string.
+    pattern = r'(-b\s+)(\^"|")(.+?)(\^"|")(?=\s+-|\s+https?://|\s*$)'
+    
+    def sanitize_cookie_value(match):
+        prefix = match.group(1)
+        val = match.group(3)
+        # Strip all caret/backslash double-quote escapings inside the value to get the raw string
+        raw_val = val.replace('^', '').replace('\\', '')
+        # Escape any double quotes in the raw value
+        escaped_val = raw_val.replace('"', '\\"')
+        # Wrap the whole cookie value in simple double quotes
+        return f'{prefix}"{escaped_val}"'
+        
+    t = re.sub(pattern, sanitize_cookie_value, t)
+    
+    # 3. Handle other arguments (like -H ^"Header: Value^" or general caret escaping)
+    # Convert ^" to "
+    t = t.replace('^"', '"')
+    # Strip any other standalone carets
+    t = t.replace('^', '')
+    
+    args = [arg for arg in shlex.split(t, posix=True) if arg.strip()]
     if not args or args[0] != "curl":
         raise ValueError(f"{path} is not a curl command")
     return args
@@ -383,6 +408,10 @@ def fetch_x(max_pages=20, pause=0.8):
     try:
         total = 0
         for source, filename in CURL_FILES.items():
+            curl_file = X_CURL_DIR / filename
+            if not curl_file.exists():
+                print(f"  skip {source}: {filename} not found")
+                continue
             cursor = None
             seen = set()
             for page in range(max_pages):

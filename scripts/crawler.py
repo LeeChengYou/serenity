@@ -90,14 +90,14 @@ def _rewrite_curl_file(path: Path, cookie_str: str, ct0: str) -> bool:
 
     # -b ^"<value>^"  (may span one contiguous run — greedy inside)
     new_text = re.sub(
-        r'(-b \^")([^\^]|\^(?!"))*(\^")',
+        r'(-b \^")(.*?)(\^")(?=\s|$)',
         lambda m: f'{m.group(1)}{cookie_str}{m.group(3)}',
         text,
     )
 
     # x-csrf-token: <value>^"
     new_text = re.sub(
-        r'(x-csrf-token: )([^\^]|\^(?!"))*(\^")',
+        r'(x-csrf-token: )(.*?)(\^")(?=\s|$)',
         lambda m: f'{m.group(1)}{ct0}{m.group(3)}',
         new_text,
     )
@@ -112,6 +112,39 @@ def _rewrite_curl_file(path: Path, cookie_str: str, ct0: str) -> bool:
 # R5-1: login command
 # ---------------------------------------------------------------------------
 
+_STEALTH_ARGS = [
+    "--no-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--disable-dev-shm-usage",
+]
+
+
+def _launch_persistent(p, headless: bool):
+    """
+    Try system Chrome first (K-1 fix: avoids X bot-detection).
+    Falls back to bundled Chromium with stealth args.
+    Returns the browser context.
+    """
+    for channel in ("chrome", "msedge", None):
+        try:
+            kwargs = dict(
+                user_data_dir=str(PROFILE_DIR),
+                headless=headless,
+                args=_STEALTH_ARGS,
+            )
+            if channel:
+                kwargs["channel"] = channel
+            ctx = p.chromium.launch_persistent_context(**kwargs)
+            label = channel if channel else "Chromium"
+            print(f"[crawler] 使用瀏覽器：{label}")
+            return ctx
+        except Exception as exc:
+            label = channel if channel else "Chromium"
+            print(f"[crawler] {label} 啟動失敗：{exc}，嘗試下一個...")
+    raise RuntimeError("所有瀏覽器都無法啟動，請確認已安裝 Chrome/Edge 或 Playwright Chromium。")
+
+
 def cmd_login():
     sync_playwright = _get_playwright()
     if sync_playwright is None:
@@ -119,15 +152,13 @@ def cmd_login():
         sys.exit(1)
 
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    print("正在啟動有頭瀏覽器，請稍候...")
+    print("正在啟動有頭瀏覽器（優先使用系統 Chrome，K-1 修復）...")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE_DIR),
-            headless=False,
-            args=["--no-sandbox"],
-        )
+        browser = _launch_persistent(p, headless=False)
         page = browser.new_page()
+        # Remove navigator.webdriver flag (stealth)
+        page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         page.goto("https://x.com/login")
         time.sleep(2)
 
@@ -165,11 +196,7 @@ def cmd_refresh_cookies():
         sys.exit(1)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE_DIR),
-            headless=True,
-            args=["--no-sandbox"],
-        )
+        browser = _launch_persistent(p, headless=True)
         page = browser.new_page()
 
         try:
@@ -262,11 +289,7 @@ def cmd_status():
     print("正在快速檢查登入狀態（無頭模式）...")
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch_persistent_context(
-                user_data_dir=str(PROFILE_DIR),
-                headless=True,
-                args=["--no-sandbox"],
-            )
+            browser = _launch_persistent(p, headless=True)
             page = browser.new_page()
             page.goto("https://x.com/home", timeout=20000)
             time.sleep(2)
