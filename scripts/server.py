@@ -123,7 +123,7 @@ class KeyManager:
     _ENV_NAMES  = ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"]
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._entries: dict = {}
         for label, env_name in zip(self._ALL_LABELS, self._ENV_NAMES):
             val = os.environ.get(env_name)
@@ -149,9 +149,9 @@ class KeyManager:
         """
         if task_class == "agent_arena":
             # Round-robin: each call advances the starting index
-            with self._lock:
-                idx = KeyManager._arena_rr_index % len(self._ALL_LABELS)
-                KeyManager._arena_rr_index += 1
+            # Already inside self._lock from pick_key, so we can access safely
+            idx = KeyManager._arena_rr_index % len(self._ALL_LABELS)
+            KeyManager._arena_rr_index += 1
             # Build order starting from round-robin position
             rotated = self._ALL_LABELS[idx:] + self._ALL_LABELS[:idx]
             return [lbl for lbl in rotated if lbl in self._entries]
