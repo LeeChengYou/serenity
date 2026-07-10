@@ -1,0 +1,300 @@
+{
+ "/api/config": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "default_model",
+    "has_key"
+   ]
+  }
+ },
+ "/api/monitor": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "logs"
+   ]
+  }
+ },
+ "/api/keypool": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "keys"
+   ]
+  }
+ },
+ "/api/regime": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "note",
+    "qqq",
+    "regime",
+    "soxx",
+    "spy",
+    "universe_above_ema50_pct"
+   ]
+  }
+ },
+ "/api/hitrate": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "live_since",
+    "recent_calls",
+    "sources",
+    "summary"
+   ]
+  }
+ },
+ "/api/changes?days=7": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "days",
+    "items"
+   ]
+  }
+ },
+ "/api/summary": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "stats",
+    "symbols"
+   ]
+  }
+ },
+ "/api/feed": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "items"
+   ]
+  }
+ },
+ "/api/symbol/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "bars",
+    "indicators",
+    "mentions",
+    "neighbors",
+    "prices",
+    "symbol"
+   ]
+  }
+ },
+ "/api/signal/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "atr14",
+    "conditions",
+    "ema20_ref",
+    "ema50",
+    "entry_zone",
+    "insufficient_data",
+    "risk_per_share",
+    "rr_ratio",
+    "rsi",
+    "score",
+    "score_source",
+    "sentiment",
+    "signal",
+    "stop_loss",
+    "symbol",
+    "target",
+    "volume_ratio"
+   ]
+  }
+ },
+ "/api/signal/history/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "history",
+    "symbol"
+   ]
+  }
+ },
+ "/api/news/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "items",
+    "macro",
+    "symbol"
+   ]
+  }
+ },
+ "/api/estimates/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "down_revisions_30d",
+    "eps_estimate_current_q",
+    "eps_estimate_current_y",
+    "eps_estimate_next_q",
+    "n_analysts",
+    "recommendation_key",
+    "recommendation_mean",
+    "revision_direction",
+    "symbol",
+    "target_high",
+    "target_low",
+    "target_mean",
+    "target_median",
+    "target_vs_price",
+    "up_revisions_30d",
+    "updated_at"
+   ]
+  }
+ },
+ "/api/fundamentals/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "eps_ttm",
+    "forward_pe",
+    "gross_margin",
+    "market_cap",
+    "next_earnings_date",
+    "pe",
+    "revenue_growth_yoy",
+    "symbol",
+    "updated_at"
+   ]
+  }
+ },
+ "/api/scorecard/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "company",
+    "evidence",
+    "evidence_json",
+    "factor_details",
+    "factors_json",
+    "final_score",
+    "kill_switches",
+    "kill_switches_json",
+    "market",
+    "penalties_json",
+    "penalty_details",
+    "penalty_points",
+    "raw_factor_points",
+    "symbol",
+    "updated_at",
+    "verdict"
+   ]
+  }
+ },
+ "/api/scorecard/history/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "history",
+    "symbol"
+   ]
+  }
+ },
+ "/api/memory": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "memories"
+   ]
+  }
+ },
+ "/api/expert-views": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "items"
+   ]
+  }
+ },
+ "/api/expert-views/NVDA": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "items",
+    "symbol"
+   ]
+  }
+ },
+ "/api/arena/leaderboard": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "month",
+    "rows"
+   ]
+  }
+ },
+ "/api/arena/nav": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "benchmark",
+    "series"
+   ]
+  }
+ },
+ "/api/arena/trades": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "trades"
+   ]
+  }
+ },
+ "/api/arena/reflections": {
+  "status": 200,
+  "shape": {
+   "type": "dict",
+   "keys": [
+    "rows"
+   ]
+  }
+ },
+ "/index.html": {
+  "status": 200,
+  "shape": {
+   "type": "html",
+   "nonempty": true
+  }
+ }
+}
