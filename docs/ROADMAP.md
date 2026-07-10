@@ -25,6 +25,7 @@
 | **J-9 專家觀點** | `python scripts/crawler.py fetch-sources` | 每週一 07:40 | SEC EDGAR 13F 持倉變化（官方申報，45 天延遲）|
 | **J-10 Arena 日循環** | `python scripts/agent_arena.py daily` | 每日 08:00（J-8 之後） | 撮合昨日 pending 單 → 生成簡報 → 9 agents 決策 → 記錄 NAV |
 | **J-11 Arena 月度結算** | `python scripts/agent_arena.py monthly` | 每月 1 日 08:30 | 月度績效結算 + 反思 + 策略卡迭代 |
+| **J-12 每日健康檢查** | `python scripts/daily_check.py repair` | 每日 09:00（J-10 之後） | 十項資料域新鮮度檢查 + 自動修復斷點；失敗項依序重跑對應 ingest/arena 指令並輸出終檢報告 |
 
 ### Windows 工作排程器註冊指令（由使用者執行）
 
@@ -45,6 +46,7 @@ schtasks /Create /TN "Serenity\J4-refresh-x"    /TR "$py $repo\scripts\crawler.p
 schtasks /Create /TN "Serenity\J9-fetch-sources" /TR "$py $repo\scripts\crawler.py fetch-sources"       /SC WEEKLY /D MON /ST 07:40 /F
 schtasks /Create /TN "Serenity\J10-arena-daily"  /TR "$py $repo\scripts\agent_arena.py daily"            /SC DAILY  /ST 08:00 /F
 schtasks /Create /TN "Serenity\J11-arena-monthly" /TR "$py $repo\scripts\agent_arena.py monthly"         /SC MONTHLY /D 1 /ST 08:30 /F
+schtasks /Create /TN "Serenity\J12-daily-check"  /TR "$py $repo\scripts\daily_check.py repair"           /SC DAILY  /ST 09:00 /F
 ```
 
 ### 使用說明（首次設定）
