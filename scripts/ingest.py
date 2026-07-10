@@ -564,7 +564,7 @@ def fetch_prices(days_back=420, min_mentions=2):
         con.close()
 
 
-def fetch_stocktwits(symbol: str, con=None, limit: int = 30) -> int:
+def fetch_stocktwits(symbol: str, con=None, limit: int = 30) -> "int | None":
     """
     Fetch up to `limit` recent messages for `symbol` from the public
     StockTwits stream API and store them in the `news_sentiment` table.
@@ -581,30 +581,52 @@ def fetch_stocktwits(symbol: str, con=None, limit: int = 30) -> int:
 
     Rate limits: the endpoint allows roughly 200 requests/hour
     unauthenticated.  Callers should add a pause between symbols when
-    processing a batch.  On HTTP 429 or any network error this function
-    logs the error and returns 0 — it never fabricates data.
+    processing a batch.  On network/HTTP failure this function logs the
+    error and returns None (0 means fetched OK but no new rows) — it
+    never fabricates data.
     """
     own_connection = con is None
     if own_connection:
         con = connect()
 
     url = f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        print(f"  stocktwits {symbol}: HTTP {exc.code} — skipping", file=sys.stderr)
-        return 0
-    except Exception as exc:
-        print(f"  stocktwits {symbol}: {exc} — skipping", file=sys.stderr)
-        return 0
+    # Cloudflare rejects bare UAs with 403 (since ~2026-07); full browser
+    # headers mostly pass but still 403/503 intermittently, hence retries.
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    body = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as exc:
+            last_err = f"HTTP {exc.code}"
+            if exc.code in (403, 429, 503) and attempt < 2:
+                time.sleep(3 * (attempt + 1))
+                continue
+            break
+        except Exception as exc:
+            last_err = str(exc)
+            break
+    if body is None:
+        print(f"  stocktwits {symbol}: {last_err} — skipping", file=sys.stderr)
+        return None
 
     try:
         data = json.loads(body)
     except Exception as exc:
         print(f"  stocktwits {symbol}: JSON parse error {exc}", file=sys.stderr)
-        return 0
+        return None
 
     messages = (data.get("messages") or [])[:limit]
     inserted = 0
@@ -670,10 +692,21 @@ def fetch_stocktwits_all(min_mentions: int = 2, pause: float = 1.0) -> None:
         print("no symbols yet; run fetch-x first")
         return
     total = 0
+    failed = 0
     for symbol in symbols:
-        total += fetch_stocktwits(symbol, con=con)
+        n = fetch_stocktwits(symbol, con=con)
+        if n is None:
+            failed += 1
+        else:
+            total += n
         time.sleep(pause)
-    print(f"stocktwits: {total} total new rows for {len(symbols)} symbols")
+    print(f"stocktwits: {total} total new rows for {len(symbols)} symbols"
+          + (f", {failed} fetch failures" if failed else ""))
+    if symbols and failed == len(symbols):
+        # every symbol failed (e.g. Cloudflare block) — exit non-zero so
+        # schedulers and daily_check.py record this as a broken step
+        print("stocktwits: all symbols failed — job failure", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1460,8 +1493,10 @@ def main():
     if args.command in {"stocktwits", "all"}:
         if args.symbol:
             con = connect()
-            fetch_stocktwits(args.symbol.upper(), con=con)
+            n = fetch_stocktwits(args.symbol.upper(), con=con)
             con.commit()
+            if n is None:
+                sys.exit(1)
         else:
             fetch_stocktwits_all(args.min_mentions, args.pause)
     if args.command == "news":
