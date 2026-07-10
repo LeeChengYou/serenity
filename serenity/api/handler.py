@@ -33,10 +33,18 @@ from ..services.settings import (
     handle_post_settings,
     handle_test_key,
 )
+from ..services.bootstrap import get_status as bootstrap_get_status, handle_post_bootstrap
 
 
 class _BadRequest(Exception):
     """路由回傳 400 Bad Request 時拋出。"""
+
+
+class _HTTPResponse(Exception):
+    """路由需要自訂 HTTP status code 時拋出（payload, status）。"""
+    def __init__(self, payload: dict, status: int):
+        self.payload = payload
+        self.status = status
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -77,6 +85,8 @@ class Handler(SimpleHTTPRequestHandler):
                     payload = json.loads(post_data)
                 response_payload = self.route_post_api(parsed.path, payload)
                 self.send_json(response_payload)
+            except _HTTPResponse as exc:
+                self.send_json(exc.payload, status=exc.status)
             except _BadRequest as exc:
                 self.send_json({"error": str(exc)}, status=400)
             except Exception as exc:
@@ -100,6 +110,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def route_api(self, path, query):
+        # 階段三：Bootstrap API
+        if path == "/api/admin/bootstrap/status":
+            return bootstrap_get_status()
         # 階段二：設定 API
         if path == "/api/settings":
             return build_settings_response()
@@ -228,6 +241,10 @@ class Handler(SimpleHTTPRequestHandler):
         return {"error": "unknown api"}
 
     def route_post_api(self, path, payload):
+        # 階段三：Bootstrap API
+        if path == "/api/admin/bootstrap":
+            resp, status = handle_post_bootstrap(payload)
+            raise _HTTPResponse(resp, status)
         # 階段二：設定 API
         if path == "/api/settings":
             try:

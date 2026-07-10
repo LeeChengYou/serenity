@@ -139,6 +139,38 @@ python scripts/crawler.py fetch-sources
 
 ---
 
+## 二之二、桌面版打包（V7 §3）
+
+### build 指令
+
+```powershell
+# 確認 pywebview 與 pyinstaller 已安裝（沒有就印安裝指令退出）
+pip install -r requirements-desktop.txt
+
+# 執行打包（輸出 dist/Serenity/Serenity.exe）
+PowerShell -File scripts\build_desktop.ps1
+```
+
+### SERENITY_HOME 說明
+
+桌面版（frozen）執行時，所有使用者資料存放在 `SERENITY_HOME`：
+
+| 平台 | 預設路徑 |
+|------|---------|
+| Windows | `%LOCALAPPDATA%\Serenity\` |
+| macOS/Linux | `~/.serenity/` |
+
+可用環境變數 `SERENITY_HOME` 覆蓋。`SERENITY_HOME/serenity.sqlite` 是主資料庫；
+`SERENITY_HOME/config.json` 存 Gemini API key 與模型設定。
+
+### X 抓取不隨包（開發者功能）
+
+X 貼文抓取（`scripts/crawler.py`、`x_curl/` cookies）屬開發者功能，
+**不打包進散佈版**。一般使用者靠 Google News RSS 取得新聞資料；
+競技場模式在無推文資料時自動降級使用新聞/基本面摘要。
+
+---
+
 ## 三、決策里程碑
 
 | 日期 | 事件 | 決策 |

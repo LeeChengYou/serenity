@@ -1,0 +1,3 @@
+# 桌面版額外依賴（開發/打包機安裝；不在 server 部署需求中）
+pywebview>=5
+pyinstaller>=6

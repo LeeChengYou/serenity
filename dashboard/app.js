@@ -1559,15 +1559,22 @@ async function init() {
     const summary = await json('/api/summary');
     state.symbols = summary.symbols || [];
     renderKpis(summary.stats || {});
-    renderSymbols();
-    const urlSym = initSymbol && state.symbols.find(s => s.symbol === initSymbol) ? initSymbol : null;
-    const first  = state.symbols.find(s => s.has_prices) || state.symbols[0];
-    const target = urlSym || first?.symbol;
-    if (target) {
-      if (initTab !== 'chart') switchDetailTab(initTab);
-      await selectSymbol(target, { pushState: false });
-      const tab = _activeTab();
-      history.replaceState({ symbol: target, tab }, '', `/?s=${encodeURIComponent(target)}&tab=${tab}`);
+
+    // 階段三：Onboarding 引導（has_key=true 且資料庫空白時顯示）
+    if (_settingsState && _settingsState.has_key && state.symbols.length === 0) {
+      _showOnboardingBlock();
+    } else {
+      _hideOnboardingBlock();
+      renderSymbols();
+      const urlSym = initSymbol && state.symbols.find(s => s.symbol === initSymbol) ? initSymbol : null;
+      const first  = state.symbols.find(s => s.has_prices) || state.symbols[0];
+      const target = urlSym || first?.symbol;
+      if (target) {
+        if (initTab !== 'chart') switchDetailTab(initTab);
+        await selectSymbol(target, { pushState: false });
+        const tab = _activeTab();
+        history.replaceState({ symbol: target, tab }, '', `/?s=${encodeURIComponent(target)}&tab=${tab}`);
+      }
     }
   } catch (err) {
     console.error('Failed to load summary:', err);
@@ -2098,6 +2105,90 @@ window.loadArenaTrades = async function() {
     tradesEl.innerHTML = `<p class="placeholder-text">載入失敗：${escapeHtml(e.message)}</p>`;
   }
 };
+
+// ── Onboarding（階段三：空 DB + has_key=true 時顯示初始資料引導）────────────────
+
+let _bootstrapPollTimer = null;
+
+function _showOnboardingBlock() {
+  let el = $('onboardingBlock');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'onboardingBlock';
+    el.style.cssText = 'padding:24px;text-align:center;max-width:520px;margin:40px auto;border:1px solid var(--border,#ddd);border-radius:8px;background:var(--surface,#fff)';
+    document.body.insertBefore(el, document.body.firstChild);
+  }
+  el.innerHTML = `
+    <h2 style="margin:0 0 12px">歡迎使用 Serenity Signal</h2>
+    <p style="color:var(--muted,#666);margin:0 0 20px">資料庫是空的，點擊下方按鈕抓取初始資料（價格、指數、新聞）。</p>
+    <button id="bootstrapBtn" onclick="startBootstrap()"
+      style="padding:10px 28px;background:#0070f3;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer">
+      抓取初始資料
+    </button>
+    <div id="bootstrapProgress" style="margin-top:16px;min-height:60px"></div>
+  `;
+  el.style.display = 'block';
+}
+
+function _hideOnboardingBlock() {
+  const el = $('onboardingBlock');
+  if (el) el.style.display = 'none';
+}
+
+window.startBootstrap = async function() {
+  const btn = $('bootstrapBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '啟動中…'; }
+  try {
+    const resp = await fetch('/api/admin/bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      if ($('bootstrapProgress')) $('bootstrapProgress').innerHTML =
+        `<p style="color:red">錯誤：${escapeHtml(d.error || resp.statusText)}</p>`;
+      return;
+    }
+    _pollBootstrap();
+  } catch (e) {
+    if ($('bootstrapProgress')) $('bootstrapProgress').innerHTML =
+      `<p style="color:red">請求失敗：${escapeHtml(e.message)}</p>`;
+  }
+};
+
+function _pollBootstrap() {
+  if (_bootstrapPollTimer) clearTimeout(_bootstrapPollTimer);
+  _bootstrapPollTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch('/api/admin/bootstrap/status');
+      const d = await resp.json();
+      const el = $('bootstrapProgress');
+      if (el) {
+        const rows = (d.steps || []).map(s => {
+          const icon = s.status === 'done' ? '✅' : s.status === 'error' ? '❌'
+            : s.status === 'running' ? '🔄' : '⬜';
+          return `<div>${icon} ${escapeHtml(s.name)}${s.detail ? ' — ' + escapeHtml(s.detail) : ''}</div>`;
+        }).join('');
+        el.innerHTML = rows || '<p>等待中…</p>';
+      }
+      if (d.running) {
+        _pollBootstrap();
+      } else {
+        // 完成後重新載入頁面
+        const allDone = (d.steps || []).every(s => s.status === 'done');
+        if (allDone) {
+          setTimeout(() => location.reload(), 1000);
+        } else {
+          const btn = $('bootstrapBtn');
+          if (btn) { btn.disabled = false; btn.textContent = '重試'; }
+        }
+      }
+    } catch (e) {
+      _pollBootstrap(); // 暫時錯誤，繼續輪詢
+    }
+  }, 3000);
+}
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 

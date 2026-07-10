@@ -2,15 +2,21 @@
 serenity/config.py
 ROOT, DB_PATH, STATIC_DIR, .env 載入（原 server.py 70-89 行）
 + 階段二：SERENITY_HOME, load_config, save_config, get_setting
++ 階段三：frozen（PyInstaller onedir）支援
 """
 import json
 import os
+import sys
 from pathlib import Path
 
-# ROOT must point to repo root; this file lives at serenity/config.py,
-# so parents[1] is the repo root (same as original server.py's parents[1]).
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "data" / "serenity.sqlite"
+# ── frozen（PyInstaller onedir）vs 開發模式 ───────────────────────────────────
+if getattr(sys, "frozen", False):
+    # 打包後：sys._MEIPASS 是 onedir 資源根；使用者資料放 SERENITY_HOME
+    ROOT = Path(sys._MEIPASS)
+else:
+    # 開發模式：此檔在 serenity/config.py，parents[1] = repo root
+    ROOT = Path(__file__).resolve().parents[1]
+
 STATIC_DIR = ROOT / "dashboard"
 
 # ── .env 載入（SERENITY_NO_DOTENV=1 時跳過，供測試隔離）──────────────────────
@@ -47,6 +53,19 @@ def _get_serenity_home() -> Path:
 
 
 SERENITY_HOME: Path = _get_serenity_home()
+
+# ── DB_PATH：frozen 時用 SERENITY_HOME；開發模式用 repo data/（開發模式例外）────
+if getattr(sys, "frozen", False):
+    # 打包執行：資料庫存放在使用者目錄
+    DB_PATH: Path = SERENITY_HOME / "serenity.sqlite"
+else:
+    # 開發模式例外：repo data/ 存在就用 repo 路徑（維持現有排程/測試行為不變）
+    _repo_db = ROOT / "data" / "serenity.sqlite"
+    if _repo_db.exists():
+        DB_PATH = _repo_db
+    else:
+        # 否則回落到 SERENITY_HOME（使用者可透過 --db 或 CLI 覆蓋）
+        DB_PATH = SERENITY_HOME / "serenity.sqlite"
 
 # ── config.json 合法欄位（§2.1 schema 7 個）──────────────────────────────────
 _VALID_KEYS = {
