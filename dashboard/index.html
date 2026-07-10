@@ -22,6 +22,7 @@
         <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <a href="/monitor.html" class="monitor-btn" style="text-decoration: none; font-size: 12px; font-weight: bold; background: var(--ink); color: var(--paper); padding: 6px 14px; border-radius: 999px; display: inline-block;">📊 系統與 AI 監控面板</a>
           <span id="regimeBadge" class="regime-badge regime-unknown" title="載入市場狀態中...">⚪ 市場狀態</span>
+          <button class="settings-btn" id="settingsOpenBtn" onclick="openSettingsModal()" title="設定 API 金鑰與模型">⚙</button>
         </div>
       </div>
     </section>
@@ -286,6 +287,53 @@
       </section>
     </section><!-- /.workbench -->
   </main>
+
+  <!-- Settings Modal (Phase 2: V7 §2) -->
+  <div id="settings-modal" class="modal-overlay hidden" onclick="onSettingsOverlayClick(event)">
+    <div class="settings-modal" onclick="event.stopPropagation()">
+      <div class="settings-modal-head">
+        <h2 class="settings-modal-title">⚙ 設定</h2>
+        <button class="settings-close-btn" onclick="closeSettingsModal()" title="關閉">✕</button>
+      </div>
+
+      <!-- API key setup guide (shown when has_key=false) -->
+      <div id="settingsGuide" class="settings-guide">
+        <b>尚未設定 Gemini API 金鑰</b>：AI 對話、翻譯、分析等功能需要金鑰才能使用。<br>
+        請前往 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio</a> 免費申請後填入下方欄位。
+      </div>
+
+      <!-- Gemini API Keys -->
+      <div class="settings-section-title">Gemini API 金鑰</div>
+
+      <div id="settingsKeysContainer">
+        <!-- Dynamically rendered by JS -->
+      </div>
+
+      <!-- Model settings -->
+      <div class="settings-section-title">模型設定</div>
+
+      <div class="settings-model-row">
+        <label for="settingsGeminiModel">gemini_model（AI 對話）</label>
+        <input type="text" id="settingsGeminiModel" placeholder="gemini-2.5-flash" />
+      </div>
+      <div class="settings-model-row">
+        <label for="settingsTranslateModel">gemini_translate_model（翻譯）</label>
+        <input type="text" id="settingsTranslateModel" placeholder="gemini-2.0-flash" />
+      </div>
+      <div class="settings-model-row">
+        <label for="settingsMemoryModel">gemini_memory_model（記憶摘要）</label>
+        <input type="text" id="settingsMemoryModel" placeholder="gemini-2.0-flash" />
+      </div>
+
+      <!-- Actions -->
+      <div class="settings-action-row">
+        <button class="settings-test-btn" id="settingsTestBtn" onclick="testSettingsKey()">測試連線（Slot 1）</button>
+        <span id="settingsTestResult" class="settings-test-result"></span>
+        <button class="settings-save-btn" id="settingsSaveBtn" onclick="saveSettings()">儲存</button>
+        <span id="settingsSaveStatus" class="settings-save-status"></span>
+      </div>
+    </div>
+  </div>
 
   <!-- Task D: Mobile bottom navigation bar -->
   <nav class="mobile-bottom-nav" aria-label="Mobile navigation">

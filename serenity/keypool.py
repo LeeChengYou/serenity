@@ -1,8 +1,8 @@
 """
 serenity/keypool.py
 KeyManager 類 + _key_manager 單例（原 server.py 96-256 行）
+階段二：透過 config.get_setting 取 key；新增 reload() 方法。
 """
-import os
 import threading
 import time
 from datetime import datetime
@@ -31,22 +31,69 @@ class KeyManager:
     _OVERFLOW = "KEY_4"
     _ALL_LABELS = ["KEY_1", "KEY_2", "KEY_3", "KEY_4"]
     _arena_rr_index = 0  # class-level round-robin counter for agent_arena
-    _ENV_NAMES  = ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"]
+    _SETTING_NAMES = [
+        "gemini_api_key",
+        "gemini_api_key_2",
+        "gemini_api_key_3",
+        "gemini_api_key_4",
+    ]
 
     def __init__(self):
         self._lock = threading.RLock()
         self._entries: dict = {}
-        for label, env_name in zip(self._ALL_LABELS, self._ENV_NAMES):
-            val = os.environ.get(env_name)
+        self._load_keys()
+
+    def _load_keys(self):
+        """從 config.get_setting 讀取 4 把 key，建立 entries（不加鎖，由呼叫方負責）。"""
+        from .config import get_setting
+        for label, setting_name in zip(self._ALL_LABELS, self._SETTING_NAMES):
+            val = get_setting(setting_name)
             if val:
-                self._entries[label] = {
-                    "label":            label,
-                    "key":              val,
-                    "cooling_until":    None,   # Unix timestamp or None
-                    "calls_today":      0,
-                    "errors_429_today": 0,
-                    "recent_429s":      [],     # timestamps within 10 min
-                }
+                if label not in self._entries:
+                    self._entries[label] = {
+                        "label":            label,
+                        "key":              val,
+                        "cooling_until":    None,
+                        "calls_today":      0,
+                        "errors_429_today": 0,
+                        "recent_429s":      [],
+                    }
+                else:
+                    # 更新 key 值（reload 場景：key 被替換）
+                    self._entries[label]["key"] = val
+
+    def reload(self):
+        """
+        熱重載 key（執行緒安全）。
+        - 保留仍存在 key 的統計；
+        - 消失的 key（空值）移除對應 entry；
+        - 新 key 加入；
+        - 已有 key 但值變更：更新 key 值，保留統計。
+        """
+        from .config import get_setting
+        with self._lock:
+            current_vals = {
+                label: get_setting(sname)
+                for label, sname in zip(self._ALL_LABELS, self._SETTING_NAMES)
+            }
+            for label, val in current_vals.items():
+                if val:
+                    if label in self._entries:
+                        # 更新 key 值，保留統計
+                        self._entries[label]["key"] = val
+                    else:
+                        # 新 key
+                        self._entries[label] = {
+                            "label":            label,
+                            "key":              val,
+                            "cooling_until":    None,
+                            "calls_today":      0,
+                            "errors_429_today": 0,
+                            "recent_429s":      [],
+                        }
+                else:
+                    # Key 已清除 → 移除 entry
+                    self._entries.pop(label, None)
 
     def has_any_key(self) -> bool:
         return bool(self._entries)

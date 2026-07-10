@@ -154,6 +154,11 @@ function renderScorecard(symbol, card) {
 window.triggerScorecardGeneration = async function(isRegen = false) {
   const symbol = state.active;
   if (!symbol) return;
+  // Phase 2 guard: require API key
+  if (_settingsState && !_settingsState.has_key) {
+    _requireApiKey('供應鏈瓶頸分析生成');
+    return;
+  }
   const btn = isRegen ? $('regenerateScorecardBtn') : $('generateScorecardBtn');
   if (!btn) return;
   const originalText = btn.textContent;
@@ -883,6 +888,11 @@ async function _fetchTranslations(texts, cache) {
 window.toggleNewsTranslation = async function() {
   const btn = $('newsTranslateBtn');
   if (!btn || !_xlate.news.data) return;
+  // Phase 2 guard
+  if (_settingsState && !_settingsState.has_key) {
+    _requireApiKey('新聞翻譯');
+    return;
+  }
 
   if (_xlate.news.mode === 'zh') {
     // Revert to English
@@ -918,6 +928,11 @@ window.toggleNewsTranslation = async function() {
 window.toggleFeedTranslation = async function() {
   const btn = $('feedTranslateBtn');
   if (!btn) return;
+  // Phase 2 guard
+  if (_settingsState && !_settingsState.has_key) {
+    _requireApiKey('X 貼文翻譯');
+    return;
+  }
 
   if (_xlate.feed.mode === 'zh') {
     // Revert to English
@@ -1274,6 +1289,237 @@ window.setMobilePanel = function(panel) {
     btn.classList.toggle('active', btn.dataset.panel === panel));
 };
 
+// ── Settings Modal (Phase 2: V7 §2) ──────────────────────────────────────────
+
+// Cached settings state (loaded once from /api/settings)
+let _settingsState = null;
+// Original values on load, to detect changes
+let _settingsOriginal = {};
+
+window.openSettingsModal = function() {
+  const overlay = $('settings-modal');
+  if (overlay) { overlay.classList.remove('hidden'); }
+  // Reload latest settings when opening
+  _loadSettingsIntoModal();
+};
+
+window.closeSettingsModal = function() {
+  const overlay = $('settings-modal');
+  if (overlay) overlay.classList.add('hidden');
+  // Clear test result on close
+  const tr = $('settingsTestResult');
+  if (tr) { tr.className = 'settings-test-result'; tr.textContent = ''; }
+};
+
+window.onSettingsOverlayClick = function(e) {
+  if (e.target === $('settings-modal')) closeSettingsModal();
+};
+
+async function _loadSettingsIntoModal() {
+  try {
+    const data = await fetch('/api/settings').then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    _settingsState = data;
+    _renderSettingsModal(data);
+  } catch (err) {
+    // If we can't load settings, just show empty modal
+    _renderSettingsModal(null);
+  }
+}
+
+function _renderSettingsModal(data) {
+  const keys = (data && data.keys) || [
+    { slot: 1, set: false, masked: null },
+    { slot: 2, set: false, masked: null },
+    { slot: 3, set: false, masked: null },
+    { slot: 4, set: false, masked: null },
+  ];
+  const models = (data && data.models) || {};
+  const hasKey = data ? data.has_key : false;
+
+  // Guide block: show when no key set
+  const guide = $('settingsGuide');
+  if (guide) {
+    if (hasKey) guide.classList.remove('visible');
+    else guide.classList.add('visible');
+  }
+
+  // Render key slots
+  const container = $('settingsKeysContainer');
+  if (container) {
+    container.innerHTML = keys.map(k => {
+      const fieldName = k.slot === 1 ? 'gemini_api_key' : `gemini_api_key_${k.slot}`;
+      const dot = `<span class="key-status-dot ${k.set ? 'set' : 'unset'}"></span>`;
+      const ph = k.set ? k.masked : '輸入新金鑰…';
+      return `
+        <div style="margin-bottom:8px;">
+          <div class="settings-key-label">${dot} Slot ${k.slot}${k.set ? '（已設定）' : '（未設定）'}</div>
+          <div class="settings-key-row">
+            <input type="password" id="settingsKey${k.slot}"
+              data-field="${fieldName}"
+              placeholder="${escapeHtml(ph || '')}"
+              autocomplete="new-password"
+              spellcheck="false" />
+            <button class="settings-key-clear-btn"
+              onclick="clearSettingsKeySlot(${k.slot})"
+              title="清除此 Slot（送空字串以刪除）">清除</button>
+          </div>
+        </div>`;
+    }).join('');
+
+    // Save original (empty = no change intent)
+    _settingsOriginal = {};
+  }
+
+  // Fill model fields
+  if ($('settingsGeminiModel'))    $('settingsGeminiModel').value    = models.gemini_model           || '';
+  if ($('settingsTranslateModel')) $('settingsTranslateModel').value = models.gemini_translate_model || '';
+  if ($('settingsMemoryModel'))    $('settingsMemoryModel').value    = models.gemini_memory_model    || '';
+
+  // Clear status messages
+  const ss = $('settingsSaveStatus');
+  if (ss) ss.textContent = '';
+  const tr = $('settingsTestResult');
+  if (tr) { tr.className = 'settings-test-result'; tr.textContent = ''; }
+}
+
+// "清除" button on a key slot: marks it to be sent as empty string (= delete)
+window.clearSettingsKeySlot = function(slot) {
+  const inp = $(`settingsKey${slot}`);
+  if (!inp) return;
+  inp.value = '';
+  inp.placeholder = '（清除——儲存後生效）';
+  inp.dataset.clearIntent = 'true';
+};
+
+window.testSettingsKey = async function() {
+  const btn = $('settingsTestBtn');
+  const result = $('settingsTestResult');
+  if (!btn || !result) return;
+
+  // Use Slot 1 input value; if empty, nothing to test
+  const inp = $('settingsKey1');
+  const key = inp ? inp.value.trim() : '';
+
+  if (!key) {
+    result.className = 'settings-test-result fail';
+    result.textContent = '請先在 Slot 1 填入金鑰再測試';
+    return;
+  }
+
+  btn.disabled = true;
+  result.className = 'settings-test-result testing';
+  result.textContent = '測試中…';
+
+  try {
+    const res = await fetch('/api/settings/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    }).then(r => r.json());
+
+    if (res.ok) {
+      result.className = 'settings-test-result ok';
+      result.textContent = '✓ 連線成功';
+    } else {
+      result.className = 'settings-test-result fail';
+      result.textContent = `✗ 失敗：${res.error || '未知錯誤'}`;
+    }
+  } catch (err) {
+    result.className = 'settings-test-result fail';
+    result.textContent = `✗ 連線錯誤：${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+window.saveSettings = async function() {
+  const btn = $('settingsSaveBtn');
+  const status = $('settingsSaveStatus');
+  if (!btn || !status) return;
+
+  btn.disabled = true;
+  status.textContent = '儲存中…';
+
+  const payload = {};
+
+  // Collect key slots: only include if user typed something OR if clearIntent is set
+  for (let slot = 1; slot <= 4; slot++) {
+    const inp = $(`settingsKey${slot}`);
+    if (!inp) continue;
+    const fieldName = inp.dataset.field;
+    if (!fieldName) continue;
+    const val = inp.value.trim();
+    const clearIntent = inp.dataset.clearIntent === 'true';
+    if (val !== '') {
+      // New value entered: include it
+      payload[fieldName] = val;
+    } else if (clearIntent) {
+      // Explicit clear: send empty string to remove key
+      payload[fieldName] = '';
+    }
+    // If empty and no clearIntent: skip (no change)
+  }
+
+  // Collect model fields (only if changed from original)
+  const origModels = (_settingsState && _settingsState.models) || {};
+  const modelFields = [
+    ['settingsGeminiModel',    'gemini_model'],
+    ['settingsTranslateModel', 'gemini_translate_model'],
+    ['settingsMemoryModel',    'gemini_memory_model'],
+  ];
+  for (const [elId, field] of modelFields) {
+    const el = $(elId);
+    if (!el) continue;
+    const val = el.value.trim();
+    if (val !== (origModels[field] || '')) {
+      payload[field] = val;
+    }
+  }
+
+  if (Object.keys(payload).length === 0) {
+    btn.disabled = false;
+    status.textContent = '（無變動）';
+    setTimeout(() => { if (status) status.textContent = ''; }, 2000);
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const newData = await res.json();
+    _settingsState = newData;
+    _renderSettingsModal(newData);
+    status.textContent = '✓ 已儲存';
+    // If keys are now set, hide the guide
+    if (newData.has_key) {
+      const guide = $('settingsGuide');
+      if (guide) guide.classList.remove('visible');
+    }
+    setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+  } catch (err) {
+    status.textContent = `✗ 儲存失敗：${err.message}`;
+    setTimeout(() => { if (status) status.textContent = ''; }, 5000);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+/** Called by guarded actions when has_key=false */
+function _requireApiKey(actionName) {
+  showToast(`請先在 ⚙ 設定填入 Gemini API key，才能使用「${actionName}」功能。`, 'info', 5000);
+  openSettingsModal();
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init() {
@@ -1285,6 +1531,19 @@ async function init() {
   loadRegime();
   // R3-5: load signal changes for Δ badges (once per page load)
   loadChanges();
+
+  // Phase 2: load settings; auto-open modal if no API key configured
+  try {
+    const settings = await fetch('/api/settings').then(r => r.ok ? r.json() : null);
+    if (settings) {
+      _settingsState = settings;
+      if (!settings.has_key) {
+        // Show modal with guide
+        _renderSettingsModal(settings);
+        openSettingsModal();
+      }
+    }
+  } catch (_) { /* graceful degradation */ }
 
   try {
     const config = await json('/api/config');
@@ -1451,6 +1710,11 @@ async function sendChatMessage() {
   const input = $('chatInput'), sendBtn = $('chatSend');
   const text = input.value.trim();
   if (!text) return;
+  // Phase 2 guard: require API key
+  if (_settingsState && !_settingsState.has_key) {
+    _requireApiKey('AI 對話');
+    return;
+  }
   input.value = ''; input.disabled = true; sendBtn.disabled = true;
   appendChatMessage('user', text);
   state.chatHistory.push({ role: 'user', content: text });

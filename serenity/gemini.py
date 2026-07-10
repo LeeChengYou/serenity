@@ -14,7 +14,7 @@ def call_gemini(model_name: str, contents: list, system_instruction: str,
                 task_class: str = "interactive") -> dict:
     """Unified Gemini API call with KeyManager 429 failover routing."""
     if not _key_manager.has_any_key():
-        raise ValueError("尚未設定 Gemini API Key，無法呼叫 AI 服務。")
+        raise ValueError("尚未設定 Gemini API key，請先在 ⚙ 設定填入 Gemini API key。")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
     req_payload = {
         "contents": contents,

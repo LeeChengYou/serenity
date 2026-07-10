@@ -28,6 +28,15 @@ from ..services.arena_views import (
 from ..services.chat import handle_chat_api
 from ..services.translate import handle_translate_api
 from ..services.scorecard import generate_scorecard
+from ..services.settings import (
+    build_settings_response,
+    handle_post_settings,
+    handle_test_key,
+)
+
+
+class _BadRequest(Exception):
+    """路由回傳 400 Bad Request 時拋出。"""
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -68,6 +77,8 @@ class Handler(SimpleHTTPRequestHandler):
                     payload = json.loads(post_data)
                 response_payload = self.route_post_api(parsed.path, payload)
                 self.send_json(response_payload)
+            except _BadRequest as exc:
+                self.send_json({"error": str(exc)}, status=400)
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
@@ -89,10 +100,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def route_api(self, path, query):
+        # 階段二：設定 API
+        if path == "/api/settings":
+            return build_settings_response()
         if path == "/api/config":
+            from ..config import get_setting
             return {
-                "has_key": bool(os.environ.get("GEMINI_API_KEY")),
-                "default_model": os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+                "has_key": bool(get_setting("gemini_api_key")),
+                "default_model": get_setting("gemini_model"),
             }
         if path == "/api/monitor":
             log_path = ROOT / "data" / "chat_monitor.json"
@@ -213,6 +228,14 @@ class Handler(SimpleHTTPRequestHandler):
         return {"error": "unknown api"}
 
     def route_post_api(self, path, payload):
+        # 階段二：設定 API
+        if path == "/api/settings":
+            try:
+                return handle_post_settings(payload)
+            except ValueError as e:
+                raise _BadRequest(str(e))
+        if path == "/api/settings/test":
+            return handle_test_key(payload)
         if path == "/api/chat":
             return handle_chat_api(payload)
         # R4-2: translation endpoint
