@@ -53,7 +53,7 @@ DEFAULT_DATA_DIR = ROOT / "data"
 
 def connect(db_path) -> sqlite3.Connection:
     """Return a sqlite3.Connection with row_factory=sqlite3.Row."""
-    con = sqlite3.connect(str(db_path))
+    con = sqlite3.connect(str(db_path), timeout=30.0)
     con.row_factory = sqlite3.Row
     con.execute("pragma journal_mode=wal")
     con.execute("pragma foreign_keys=on")
