@@ -95,17 +95,23 @@ if data2:
     record("T2c 整體 exit 1", r.returncode == 1, f"rc={r.returncode}")
 
 # ---- T3 repair --dry-run：列出修復計畫、不執行、不寫 job_runs ----
+def _job_runs_count(db_file):
+    con = sqlite3.connect(str(db_file))
+    has_tbl = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='job_runs'").fetchone()
+    n = con.execute("SELECT COUNT(*) FROM job_runs").fetchone()[0] if has_tbl else 0
+    con.close()
+    return n
+
+n_jobs_before = _job_runs_count(tmp_db)
 r = run_cli("repair", "--dry-run", "--db", str(tmp_db))
 norm = r.stdout.replace("\\", "/")
 record("T3a dry-run exit 0", r.returncode == 0, f"rc={r.returncode} {r.stderr[-300:]}")
 record("T3b 修復計畫包含 news 對應指令（scripts/ingest.py news）",
        "scripts/ingest.py news" in norm, norm[:800])
-con = sqlite3.connect(str(tmp_db))
-has_tbl = con.execute(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='job_runs'").fetchone()
-n_jobs = con.execute("SELECT COUNT(*) FROM job_runs").fetchone()[0] if has_tbl else 0
-con.close()
-record("T3c dry-run 不寫入 job_runs", n_jobs == 0, f"job_runs={n_jobs}")
+n_jobs_after = _job_runs_count(tmp_db)
+record("T3c dry-run 不寫入 job_runs（增量=0）", n_jobs_after == n_jobs_before,
+       f"before={n_jobs_before} after={n_jobs_after}")
 
 # ---- T4 run --dry-run：完整每日流程與順序 ----
 r = run_cli("run", "--dry-run", "--db", str(tmp_db))
