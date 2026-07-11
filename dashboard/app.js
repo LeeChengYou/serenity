@@ -3197,15 +3197,54 @@ function fpDetailLoadExperts(sym) {
     .catch(() => { pane.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
 }
 
-// switchGlobalPage 進入資金池分頁時啟動/重啟輪詢
+// ── 聊天室 dock：把主儀表板的 .chat-panel 節點搬進/搬回 ─────────────────────
+let _chatPanelHome = null;   // { parent, nextSibling } 首次搬移前記下原位
+
+function fpDockChatPanel() {
+  const panel = document.querySelector('.chat-panel');
+  const dock = $('fpChatDock');
+  if (!panel || !dock || panel.parentElement === dock) return;
+  if (!_chatPanelHome) {
+    _chatPanelHome = { parent: panel.parentElement, nextSibling: panel.nextElementSibling };
+  }
+  dock.appendChild(panel);
+  panel.classList.add('fp-docked');
+}
+
+function fpUndockChatPanel() {
+  const panel = document.querySelector('.chat-panel');
+  if (!panel || !_chatPanelHome || panel.parentElement === _chatPanelHome.parent) return;
+  if (_chatPanelHome.nextSibling && _chatPanelHome.nextSibling.parentElement === _chatPanelHome.parent) {
+    _chatPanelHome.parent.insertBefore(panel, _chatPanelHome.nextSibling);
+  } else {
+    _chatPanelHome.parent.appendChild(panel);
+  }
+  panel.classList.remove('fp-docked');
+}
+
+// 「詢問此股」：把提問模板填入聊天輸入框（不自動送出）
+window.fpChatAskSym = function() {
+  if (!_fpSelectedSym) return;
+  const input = $('chatInput');
+  if (!input) return;
+  input.value = `請分析 ${_fpSelectedSym} 的最新訊號、新聞與風險`;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+};
+
+// switchGlobalPage 進入資金池分頁時：加寬版面、dock 聊天室、啟動輪詢
 const _origSwitchGlobalPage = window.switchGlobalPage;
 window.switchGlobalPage = function(page) {
   if (_origSwitchGlobalPage) _origSwitchGlobalPage(page);
   if (page === 'fundpool') {
+    document.body.classList.add('fundpool-wide');
+    fpDockChatPanel();
     fpLoadMarketBoard();
     if (_mbPollTimer) clearInterval(_mbPollTimer);
     _mbPollTimer = setInterval(fpLoadMarketBoard, 60000);
   } else {
+    document.body.classList.remove('fundpool-wide');
+    fpUndockChatPanel();
     if (_mbPollTimer) { clearInterval(_mbPollTimer); _mbPollTimer = null; }
   }
 };
