@@ -2797,6 +2797,7 @@ let _mbData = [];            // 原始 rows
 let _mbSortCol = 'chg_pct'; // 預設按漲跌%排序
 let _mbSortAsc = false;      // 預設降序（漲最多在前）
 let _mbPollTimer = null;
+let _mbWLOnly = false;       // 「只看觀察清單」toggle 狀態
 
 // 格式化數字輔助
 function _mbFmtPct(v) {
@@ -2835,12 +2836,11 @@ function _mbRenderTable() {
   const bodyEl = $('fpMarketBody');
   if (!bodyEl) return;
   const search = (($('fpMarketSearch') && $('fpMarketSearch').value) || '').trim().toUpperCase();
-  const wlOnly = $('fpMarketWLOnly') && $('fpMarketWLOnly').checked;
 
   // 過濾
   let rows = _mbData;
   if (search) rows = rows.filter(r => r.symbol.includes(search));
-  if (wlOnly) rows = rows.filter(r => r.in_watchlist);
+  if (_mbWLOnly) rows = rows.filter(r => r.in_watchlist);
 
   // watchlist 先行，再按 sort col
   rows = rows.slice().sort((a, b) => {
@@ -2859,10 +2859,14 @@ function _mbRenderTable() {
   }
 
   bodyEl.innerHTML = rows.map(r => {
-    const star = r.in_watchlist ? '<span class="fp-wl-star">★</span>' : '<span style="color:var(--muted)">☆</span>';
-    return `<tr class="${r.in_watchlist ? 'fp-row-wl' : ''}" onclick="fpMBSelectRow('${escapeHtml(r.symbol)}')">
-      <td style="text-align:center;">${star}</td>
-      <td class="arena-mono" style="font-weight:700;">${escapeHtml(r.symbol)}</td>
+    const sym = escapeHtml(r.symbol);
+    const starCls = r.in_watchlist ? 'in-wl' : 'not-wl';
+    const starChar = r.in_watchlist ? '★' : '☆';
+    const starBtn = `<button class="fp-wl-star-btn ${starCls}" title="${r.in_watchlist ? '移除觀察清單' : '加入觀察清單'}"
+      onclick="event.stopPropagation();fpToggleWatchlistStar('${sym}',${r.in_watchlist ? 'true' : 'false'})">${starChar}</button>`;
+    return `<tr class="${r.in_watchlist ? 'fp-row-wl' : ''}" onclick="fpMBSelectRow('${sym}')">
+      <td style="text-align:center;padding:4px 6px;">${starBtn}</td>
+      <td class="arena-mono" style="font-weight:700;">${sym}</td>
       <td class="arena-mono">${r.close != null ? '$' + Number(r.close).toFixed(2) : '<span class="arena-muted">—</span>'}</td>
       <td class="arena-mono">${_mbFmtPct(r.chg_pct)}</td>
       <td class="arena-mono">${_mbFmtPct(r.chg_5d_pct)}</td>
@@ -2872,6 +2876,36 @@ function _mbRenderTable() {
     </tr>`;
   }).join('');
 }
+
+// 「只看觀察清單」toggle 按鈕
+window.fpToggleWLFilter = function() {
+  _mbWLOnly = !_mbWLOnly;
+  const btn = $('fpMarketWLOnlyBtn');
+  if (btn) btn.classList.toggle('active', _mbWLOnly);
+  _mbRenderTable();
+};
+
+// 點星星 → 呼叫 POST /api/watchlist 加入或移除
+window.fpToggleWatchlistStar = async function(sym, currentlyIn) {
+  const body = currentlyIn ? { remove: sym } : { add: sym };
+  try {
+    const resp = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (resp.ok) {
+      // 更新本地資料並重繪
+      const row = _mbData.find(r => r.symbol === sym);
+      if (row) row.in_watchlist = !currentlyIn;
+      _mbRenderTable();
+    } else {
+      showToast(`觀察清單操作失敗 ${resp.status}`, 'error');
+    }
+  } catch (e) {
+    showToast(`觀察清單操作失敗：${e.message}`, 'error');
+  }
+};
 
 async function fpLoadMarketBoard() {
   const asOfEl = $('fpMarketAsOf');
@@ -2918,76 +2952,250 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   const searchEl = $('fpMarketSearch');
   if (searchEl) searchEl.addEventListener('input', _mbRenderTable);
-  const wlEl = $('fpMarketWLOnly');
-  if (wlEl) wlEl.addEventListener('change', _mbRenderTable);
 });
 
-// 點列 → 帶入下單面板 + 顯示 mini K 線圖
-let _mbMiniChart = null;
+// 點列 → 選中個股，更新詳情區，帶入下單面板
+let _fpSelectedSym = null;     // 目前選中的代號
+let _fpDetailCache = {};       // lazy 載入快取 { sym: { chart: true, scorecard: data, ... } }
+let _fpDetailChart = null;     // LightweightCharts instance for detail pane
+
 window.fpMBSelectRow = function(symbol) {
+  // 高亮選中列
+  document.querySelectorAll('#fpMarketBody tr').forEach(tr => {
+    const tdSym = tr.cells && tr.cells[1] && tr.cells[1].textContent.trim();
+    tr.style.outline = tdSym === symbol ? '2px solid var(--green)' : '';
+    tr.style.outlineOffset = '-2px';
+  });
+
+  _fpSelectedSym = symbol;
+
+  // 更新 chat dock 狀態列
+  const dockSym = $('fpChatDockSym');
+  if (dockSym) dockSym.textContent = symbol;
+
   // 帶入下單面板
   const symEl = $('fpOrderSymbol');
   if (symEl) symEl.value = symbol;
-  // 顯示下單面板（若有選池）
+
+  // 更新詳情標題
+  const detailSec = $('fpSymbolDetail');
+  const detailSymEl = $('fpDetailSym');
+  const detailPriceEl = $('fpDetailPrice');
+  const detailChgEl = $('fpDetailChg');
+  const detailOrderBtn = $('fpDetailOrderBtn');
+  if (detailSec) detailSec.style.display = 'block';
+  if (detailSymEl) detailSymEl.textContent = symbol;
+  if (detailOrderBtn) detailOrderBtn.style.display = _fpCurrentPoolId ? '' : 'none';
+
+  // 從 _mbData 取最新價/漲跌%
+  const row = _mbData.find(r => r.symbol === symbol);
+  if (row) {
+    if (detailPriceEl) {
+      detailPriceEl.textContent = row.close != null ? `$${Number(row.close).toFixed(2)}` : '—';
+    }
+    if (detailChgEl) {
+      const chg = row.chg_pct;
+      if (chg != null) {
+        const sign = chg >= 0 ? '+' : '';
+        detailChgEl.textContent = `${sign}${chg.toFixed(2)}%`;
+        detailChgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--ember)';
+      } else {
+        detailChgEl.textContent = '';
+      }
+    }
+  }
+
+  // 切到「走勢圖」tab（清除舊快取的 chart 實例以強制重繪）
+  if (_fpDetailCache[symbol]) delete _fpDetailCache[symbol].chart;
+  fpSwitchDetailTab('chart');
+};
+
+// 帶入下單面板按鈕
+window.fpDetailBringToOrder = function() {
+  if (!_fpSelectedSym) return;
+  const symEl = $('fpOrderSymbol');
+  if (symEl) symEl.value = _fpSelectedSym;
   if (_fpCurrentPoolId) {
     const sec = $('fpOrderSection');
     if (sec) { sec.style.display = 'block'; sec.scrollIntoView({ behavior: 'smooth' }); }
   }
-  // 顯示 mini 圖
-  const miniSec = $('fpMiniChartSection');
-  const miniSymEl = $('fpMiniChartSymbol');
-  const miniWrap = $('fpMiniChartWrap');
-  if (miniSec) miniSec.style.display = 'block';
-  if (miniSymEl) miniSymEl.textContent = symbol;
-  if (miniWrap) {
-    miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">載入中...</p>';
-    // 重用 /api/symbol/ 端點取價格資料
-    fetch(`/api/symbol/${encodeURIComponent(symbol)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data || (!data.bars && !data.prices)) {
-          miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">無價格資料</p>';
-          return;
-        }
-        const bars = data.bars || data.prices || [];
-        if (!bars.length) {
-          miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">無價格資料</p>';
-          return;
-        }
-        // 用 LightweightCharts 畫收盤線圖
-        if (_mbMiniChart) { _mbMiniChart.remove(); _mbMiniChart = null; }
-        miniWrap.innerHTML = '';
-        const chart = LightweightCharts.createChart(miniWrap, {
-          width: miniWrap.clientWidth || 400,
-          height: 200,
-          layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#182019' },
-          grid: { vertLines: { color: 'rgba(24,32,25,0.07)' }, horzLines: { color: 'rgba(24,32,25,0.07)' } },
-          rightPriceScale: { borderColor: 'rgba(24,32,25,0.15)' },
-          timeScale: { borderColor: 'rgba(24,32,25,0.15)', timeVisible: false },
-          handleScroll: false, handleScale: false,
-        });
-        const lineSeries = chart.addLineSeries({
-          color: '#1f7a4f', lineWidth: 2,
-          priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
-        });
-        const lineData = bars
-          .filter(b => b.close != null)
-          .slice(-90)  // 最近 90 交易日
-          .map(b => ({ time: b.date, value: b.close }));
-        lineSeries.setData(lineData);
-        chart.timeScale().fitContent();
-        _mbMiniChart = chart;
-        // 響應式寬度
-        const ro = new ResizeObserver(() => {
-          if (_mbMiniChart) _mbMiniChart.applyOptions({ width: miniWrap.clientWidth });
-        });
-        ro.observe(miniWrap);
-      })
-      .catch(() => {
-        miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">載入失敗</p>';
-      });
-  }
 };
+
+// ── 個股詳情頁籤 ────────────────────────────────────────────────────────────
+
+let _fpActiveDetailTab = 'chart';
+
+window.fpSwitchDetailTab = function(tab) {
+  _fpActiveDetailTab = tab;
+  // 切換 tab 按鈕 active
+  document.querySelectorAll('.fp-detail-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.dtab === tab);
+  });
+  // 切換 pane 顯示
+  const paneMap = {
+    chart:    'fpDtabChart',
+    scorecard:'fpDtabScorecard',
+    news:     'fpDtabNews',
+    dossier:  'fpDtabDossier',
+    experts:  'fpDtabExperts',
+  };
+  Object.values(paneMap).forEach(id => {
+    const el = $(id);
+    if (el) el.style.display = 'none';
+  });
+  const activePane = $(paneMap[tab]);
+  if (activePane) activePane.style.display = '';
+
+  if (!_fpSelectedSym) return;
+  // lazy 載入
+  const cache = _fpDetailCache[_fpSelectedSym] || (_fpDetailCache[_fpSelectedSym] = {});
+  if (tab === 'chart')    { if (!cache.chart)     fpDetailLoadChart(_fpSelectedSym); }
+  else if (tab === 'scorecard') { if (!cache.scorecard) fpDetailLoadScorecard(_fpSelectedSym); }
+  else if (tab === 'news')      { if (!cache.news)      fpDetailLoadNews(_fpSelectedSym); }
+  else if (tab === 'dossier')   { if (!cache.dossier)   fpDetailLoadDossier(_fpSelectedSym); }
+  else if (tab === 'experts')   { if (!cache.experts)   fpDetailLoadExperts(_fpSelectedSym); }
+};
+
+function fpDetailLoadChart(sym) {
+  const wrap = $('fpDetailChartWrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<p class="fp-detail-loading">載入中...</p>';
+  fetch(`/api/symbol/${encodeURIComponent(sym)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      const bars = (data && (data.bars || data.prices)) || [];
+      if (!bars.length) {
+        wrap.innerHTML = '<p class="fp-detail-empty">尚無價格資料</p>';
+        return;
+      }
+      if (_fpDetailChart) { _fpDetailChart.remove(); _fpDetailChart = null; }
+      wrap.innerHTML = '';
+      const chart = LightweightCharts.createChart(wrap, {
+        width: wrap.clientWidth || 600,
+        height: 256,
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#182019' },
+        grid:   { vertLines: { color: 'rgba(24,32,25,0.07)' }, horzLines: { color: 'rgba(24,32,25,0.07)' } },
+        rightPriceScale: { borderColor: 'rgba(24,32,25,0.15)' },
+        timeScale: { borderColor: 'rgba(24,32,25,0.15)', timeVisible: false },
+        handleScroll: true, handleScale: true,
+      });
+      const lineSeries = chart.addLineSeries({
+        color: '#1f7a4f', lineWidth: 2,
+        priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+      });
+      lineSeries.setData(
+        bars.filter(b => b.close != null).slice(-120).map(b => ({ time: b.date, value: b.close }))
+      );
+      chart.timeScale().fitContent();
+      _fpDetailChart = chart;
+      const ro = new ResizeObserver(() => {
+        if (_fpDetailChart) _fpDetailChart.applyOptions({ width: wrap.clientWidth });
+      });
+      ro.observe(wrap);
+      // 標記已載入
+      (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).chart = true;
+    })
+    .catch(() => { wrap.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
+}
+
+function fpDetailLoadScorecard(sym) {
+  const pane = $('fpDtabScorecard');
+  if (!pane) return;
+  pane.innerHTML = '<p class="fp-detail-loading">載入中...</p>';
+  fetch(`/api/scorecard/${encodeURIComponent(sym)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || !data.symbol) {
+        pane.innerHTML = '<p class="fp-detail-empty">尚無資料</p>';
+      } else {
+        const score = data.final_score != null ? data.final_score : '—';
+        const verdict = escapeHtml(data.verdict || '');
+        const evidence = (data.evidence || []).map(ev =>
+          `<li><b>[${escapeHtml(ev.strength || '')}]</b> ${escapeHtml(ev.claim || '')}</li>`
+        ).join('') || '<li>無</li>';
+        const weaknesses = (data.kill_switches || []).map(w => `<li>${escapeHtml(w)}</li>`).join('') || '<li>無</li>';
+        pane.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+            <span class="badge" style="font-size:15px;padding:5px 12px;">分數 ${score}/100</span>
+            <span style="color:var(--muted);font-size:12px;">${verdict}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">更新：${escapeHtml((data.updated_at || '').slice(0,10))}</div>
+          <div style="margin-bottom:8px;"><b style="font-size:11px;color:var(--blue);">⚠️ 瓶頸削弱因素</b><ul style="padding-left:16px;margin:4px 0;">${weaknesses}</ul></div>
+          <div><b style="font-size:11px;color:var(--green);">📋 核心證據</b><ul style="padding-left:16px;margin:4px 0;">${evidence}</ul></div>
+        `;
+      }
+      (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).scorecard = true;
+    })
+    .catch(() => { pane.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
+}
+
+function fpDetailLoadNews(sym) {
+  const pane = $('fpDtabNews');
+  if (!pane) return;
+  pane.innerHTML = '<p class="fp-detail-loading">載入中...</p>';
+  fetch(`/api/news/${encodeURIComponent(sym)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      const items = (data && data.items) || [];
+      if (!items.length) {
+        pane.innerHTML = '<p class="fp-detail-empty">尚無資料</p>';
+      } else {
+        pane.innerHTML = items.slice(0, 15).map(n =>
+          `<div class="news-item">
+            <span class="news-title">${escapeHtml(n.title || '')}</span>
+            <div class="news-meta"><span class="news-source">${escapeHtml(n.source || '')}</span><span>${escapeHtml((n.published_at || '').slice(0,10))}</span></div>
+            ${n.summary ? `<p class="news-summary">${escapeHtml(n.summary)}</p>` : ''}
+          </div>`
+        ).join('');
+      }
+      (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).news = true;
+    })
+    .catch(() => { pane.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
+}
+
+function fpDetailLoadDossier(sym) {
+  const pane = $('fpDtabDossier');
+  if (!pane) return;
+  pane.innerHTML = '<p class="fp-detail-loading">載入中...</p>';
+  fetch(`/api/dossier/${encodeURIComponent(sym)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || (!data.text && !data.content && !data.summary)) {
+        pane.innerHTML = '<p class="fp-detail-empty">尚無資料</p>';
+      } else {
+        const text = data.text || data.content || data.summary || '';
+        pane.innerHTML = `<div style="font-size:12.5px;line-height:1.6;white-space:pre-wrap;">${escapeHtml(text)}</div>`;
+      }
+      (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).dossier = true;
+    })
+    .catch(() => { pane.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
+}
+
+function fpDetailLoadExperts(sym) {
+  const pane = $('fpDtabExperts');
+  if (!pane) return;
+  pane.innerHTML = '<p class="fp-detail-loading">載入中...</p>';
+  fetch(`/api/expert-views/${encodeURIComponent(sym)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      const items = (data && data.items) || (Array.isArray(data) ? data : []);
+      if (!items.length) {
+        pane.innerHTML = '<p class="fp-detail-empty">尚無資料</p>';
+      } else {
+        pane.innerHTML = items.map(ev =>
+          `<div class="hitrate-call-row" style="flex-direction:column;align-items:flex-start;">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">
+              <b style="font-family:ui-monospace,monospace;font-size:12px;">${escapeHtml(ev.expert || ev.source || '—')}</b>
+              <span style="color:var(--muted);font-size:11px;">${escapeHtml((ev.date || '').slice(0,10))}</span>
+            </div>
+            <div style="font-size:12px;line-height:1.5;">${escapeHtml(ev.view || ev.content || ev.text || '')}</div>
+          </div>`
+        ).join('');
+      }
+      (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).experts = true;
+    })
+    .catch(() => { pane.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
+}
 
 // switchGlobalPage 進入資金池分頁時啟動/重啟輪詢
 const _origSwitchGlobalPage = window.switchGlobalPage;

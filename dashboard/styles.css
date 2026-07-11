@@ -1037,3 +1037,163 @@ a { color: var(--blue); text-decoration: none; }
 
 /* 行情看盤 mini 折線圖 */
 #fpMiniChartWrap { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+
+/* ── 資金池加寬模式 (body.fundpool-wide) ───────────────────────────────────── */
+body.fundpool-wide .shell {
+  width: min(96vw, 1720px);
+}
+
+/* 資金池雙欄 grid */
+.fp-two-col-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 18px;
+  align-items: start;
+}
+.fp-left-col {
+  min-width: 0;
+}
+.fp-right-col {
+  position: sticky;
+  top: 12px;
+  height: calc(100vh - 240px);
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 資金池分頁去掉舊的 max-width，改由 body class 控制 ───────────────────── */
+.fundpool-view {
+  padding: 16px 0;
+  max-width: none;
+  margin: 0;
+}
+
+/* ── 「只看觀察清單」toggle 按鈕（取代 checkbox+label）─────────────────────── */
+.fp-wl-toggle-btn {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace; font-weight: 600;
+  transition: all .15s; white-space: nowrap;
+}
+.fp-wl-toggle-btn.active {
+  background: rgba(245,166,35,0.18); color: #8b6800;
+  border-color: rgba(245,166,35,0.5);
+}
+.fp-wl-toggle-btn:hover:not(.active) { background: rgba(0,0,0,0.05); }
+
+/* ── 行情板星星可點擊 ────────────────────────────────────────────────────────── */
+.fp-wl-star-btn {
+  background: none; border: none; cursor: pointer; padding: 2px 4px;
+  font-size: 15px; line-height: 1; transition: transform .1s;
+  display: inline-block;
+}
+.fp-wl-star-btn:hover { transform: scale(1.25); }
+.fp-wl-star-btn.in-wl { color: var(--ink); }
+.fp-wl-star-btn.not-wl { color: var(--muted); opacity: .55; }
+
+/* ── 個股詳情區（fpSymbolDetail）──────────────────────────────────────────── */
+#fpSymbolDetail {
+  border: 1px solid var(--line); border-radius: 12px;
+  background: rgba(255,255,255,0.35); overflow: hidden;
+  backdrop-filter: blur(12px);
+}
+.fp-detail-header {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,0.2);
+}
+.fp-detail-sym {
+  font-family: "Bebas Neue", Impact, sans-serif; font-size: 24px; letter-spacing: .02em;
+}
+.fp-detail-price {
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 16px; font-weight: 700;
+}
+.fp-detail-chg {
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px;
+}
+.fp-detail-order-btn {
+  font-size: 11px; font-weight: 700; padding: 4px 12px;
+  border-radius: 999px; border: 1px solid var(--green);
+  background: transparent; color: var(--green); cursor: pointer;
+  font-family: inherit; transition: background .15s, color .15s; margin-left: auto;
+}
+.fp-detail-order-btn:hover { background: var(--green); color: white; }
+
+/* 頁籤列 */
+.fp-detail-tabs {
+  display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,0.1); flex-wrap: wrap;
+}
+.fp-detail-tab {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border-radius: 4px 4px 0 0; padding: 5px 12px; cursor: pointer; font-size: 12px;
+  font-family: inherit; border-bottom: none; transition: background .15s, color .15s;
+  position: relative; bottom: -1px;
+}
+.fp-detail-tab.active {
+  background: rgba(255,255,255,0.6); color: var(--ink);
+  border-color: var(--line); border-bottom-color: rgba(255,248,228,.76);
+}
+.fp-detail-tab:hover:not(.active) { background: rgba(0,0,0,0.04); }
+
+/* 頁籤內容區 */
+.fp-detail-pane {
+  padding: 14px 16px; min-height: 180px; font-size: 12.5px;
+  overflow-y: auto; max-height: 420px;
+}
+.fp-detail-loading { color: var(--muted); font-style: italic; padding: 24px 0; text-align: center; }
+.fp-detail-empty { color: var(--muted); font-style: italic; padding: 24px 0; text-align: center; }
+/* 走勢圖 wrap */
+.fp-detail-chart-wrap {
+  height: 260px; position: relative; border-radius: 6px; overflow: hidden;
+}
+
+/* ── AI 聊天室 dock（右欄）──────────────────────────────────────────────────── */
+#fpChatDock {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  background: var(--panel); backdrop-filter: blur(18px);
+  box-shadow: var(--shadow);
+}
+.fp-chat-dock-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,0.25); flex-shrink: 0;
+}
+.fp-chat-dock-sym {
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; font-weight: 700;
+  color: var(--ink); background: rgba(195,247,58,0.25);
+  padding: 2px 8px; border-radius: 4px; min-width: 40px;
+}
+.fp-chat-ask-btn {
+  font-size: 11px; font-weight: 700; padding: 4px 12px;
+  border-radius: 999px; border: 1px solid var(--green);
+  background: transparent; color: var(--green); cursor: pointer;
+  font-family: inherit; transition: background .15s, color .15s; white-space: nowrap;
+}
+.fp-chat-ask-btn:hover { background: var(--green); color: white; }
+.fp-chat-dock-title {
+  font-size: 10px; color: var(--muted); font-family: ui-monospace, monospace;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+
+/* chat-panel 搬進 dock 時填滿 */
+#fpChatDock .chat-panel {
+  flex: 1; min-height: 0; height: auto !important;
+  border-radius: 0; box-shadow: none; border: none;
+  display: flex; flex-direction: column;
+}
+#fpChatDock .chat-messages { flex: 1; min-height: 0; }
+
+/* ── <1100px 退回單欄 ──────────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .fp-two-col-grid {
+    grid-template-columns: 1fr;
+  }
+  .fp-right-col {
+    position: static;
+    height: auto;
+    min-height: 400px;
+  }
+}

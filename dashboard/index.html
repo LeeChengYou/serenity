@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20260707-arena2" />
+  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool3" />
 </head>
 <body>
   <main class="shell">
@@ -119,111 +119,152 @@
         latest_close 成交模式為輕微 look-ahead，績效統計已標注。
       </div>
 
-      <!-- 行情看盤板 — 建池區塊之上 -->
-      <div class="arena-section" id="fpMarketBoardSection">
-        <div class="fp-market-header">
-          <h2 class="arena-section-title" style="margin:0;">📈 行情看盤</h2>
-          <span id="fpMarketAsOf" class="fp-market-asof">載入中...</span>
-        </div>
-        <div class="fp-market-controls">
-          <input type="text" id="fpMarketSearch" placeholder="搜尋代號 NVDA…" />
-          <label class="fp-market-wl-filter">
-            <input type="checkbox" id="fpMarketWLOnly" />
-            只看觀察清單
-          </label>
-          <span class="fp-market-hint">點列可帶入下單面板</span>
-        </div>
-        <div class="fp-market-table-wrap">
-          <table class="arena-table fp-market-table" id="fpMarketTable">
-            <thead>
-              <tr>
-                <th>★</th>
-                <th>代號</th>
-                <th class="fp-sort-col" data-col="close">最新價</th>
-                <th class="fp-sort-col" data-col="chg_pct">漲跌%</th>
-                <th class="fp-sort-col" data-col="chg_5d_pct">5日%</th>
-                <th class="fp-sort-col" data-col="volume">成交量</th>
-                <th class="fp-sort-col" data-col="mention_count">討論熱度</th>
-                <th>30日走勢</th>
-              </tr>
-            </thead>
-            <tbody id="fpMarketBody">
-              <tr><td colspan="8" class="placeholder-text" style="text-align:center;padding:16px;">載入中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <!-- 雙欄 grid：左欄 = 行情+詳情+建池+池列表；右欄 = AI 聊天 dock -->
+      <div class="fp-two-col-grid">
 
-      <!-- 選股後 K 線圖（下單面板旁） -->
-      <div class="arena-section" id="fpMiniChartSection" style="display:none;">
-        <h2 class="arena-section-title">📊 收盤線圖：<span id="fpMiniChartSymbol"></span></h2>
-        <div id="fpMiniChartWrap" style="height:200px;position:relative;"></div>
-      </div>
+        <!-- ── 左欄 ── -->
+        <div class="fp-left-col">
 
-      <!-- 建池表單 -->
-      <div class="arena-section" id="fpCreateSection">
-        <h2 class="arena-section-title">➕ 建立新資金池</h2>
-        <div class="fp-create-form">
-          <label>名稱：<input type="text" id="fpNewName" placeholder="我的策略池" /></label>
-          <label>初始資金（USD）：<input type="number" id="fpNewCash" value="3000" min="100" step="100" /></label>
-          <button onclick="fpCreatePool()">建立</button>
-          <span id="fpCreateStatus" class="fp-status"></span>
-        </div>
-      </div>
-
-      <!-- 資金池列表 -->
-      <div class="arena-section">
-        <h2 class="arena-section-title">📋 我的資金池</h2>
-        <div id="fpPoolList"><p class="placeholder-text">載入中...</p></div>
-      </div>
-
-      <!-- 下單面板 -->
-      <div class="arena-section" id="fpOrderSection" style="display:none;">
-        <h2 class="arena-section-title">📤 下單：<span id="fpOrderPoolName"></span></h2>
-        <div class="fp-order-form">
-          <label>標的 Symbol：<input type="text" id="fpOrderSymbol" placeholder="NVDA" /></label>
-          <label>方向：
-            <select id="fpOrderSide">
-              <option value="BUY">BUY（以金額）</option>
-              <option value="SELL">SELL（以股���）</option>
-            </select>
-          </label>
-          <label id="fpOrderUsdLabel">金額（USD）：<input type="number" id="fpOrderUsd" value="300" min="1" step="10" /></label>
-          <label id="fpOrderQtyLabel" style="display:none;">股數：<input type="number" id="fpOrderQty" value="1" min="0.001" step="0.001" /></label>
-          <label>成交��式：
-            <select id="fpOrderFillMode">
-              <option value="t1_open">T+1 開盤成交（與 Agent 同規則）</option>
-              <option value="latest_close">最新收盤價成交（標注 look-ahead）</option>
-            </select>
-          </label>
-          <label>操作理由（必填）：<input type="text" id="fpOrderReason" placeholder="例：動能突破，追高進場" /></label>
-          <div class="fp-order-buttons">
-            <button onclick="fpPlaceOrder()">送��</button>
-            <button onclick="fpAskAI()" class="fp-consult-btn">先問 AI 公司</button>
+          <!-- 行情看盤板 -->
+          <div class="arena-section" id="fpMarketBoardSection">
+            <div class="fp-market-header">
+              <h2 class="arena-section-title" style="margin:0;">📈 行情看盤</h2>
+              <span id="fpMarketAsOf" class="fp-market-asof">載入中...</span>
+            </div>
+            <div class="fp-market-controls">
+              <input type="text" id="fpMarketSearch" placeholder="搜尋代號 NVDA…" />
+              <button id="fpMarketWLOnlyBtn" class="fp-wl-toggle-btn" onclick="fpToggleWLFilter()">★ 只看觀察清單</button>
+              <span class="fp-market-hint">點列選股；點★加入/移除觀察清單</span>
+            </div>
+            <div class="fp-market-table-wrap">
+              <table class="arena-table fp-market-table" id="fpMarketTable">
+                <thead>
+                  <tr>
+                    <th style="width:36px;">★</th>
+                    <th>代號</th>
+                    <th class="fp-sort-col" data-col="close">最新價</th>
+                    <th class="fp-sort-col" data-col="chg_pct">漲跌%</th>
+                    <th class="fp-sort-col" data-col="chg_5d_pct">5日%</th>
+                    <th class="fp-sort-col" data-col="volume">成交量</th>
+                    <th class="fp-sort-col" data-col="mention_count">討論熱度</th>
+                    <th>30日走勢</th>
+                  </tr>
+                </thead>
+                <tbody id="fpMarketBody">
+                  <tr><td colspan="8" class="placeholder-text" style="text-align:center;padding:16px;">載入中...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
-          <span id="fpOrderStatus" class="fp-status"></span>
-        </div>
-      </div>
 
-      <!-- 持倉與交易紀錄 -->
-      <div class="arena-section" id="fpDetailSection" style="display:none;">
-        <h2 class="arena-section-title">📊 持倉：<span id="fpDetailPoolName"></span></h2>
-        <div id="fpPositions"><p class="placeholder-text">載入��...</p></div>
-        <h3 class="arena-section-title" style="margin-top:16px;">📜 交易紀錄</h3>
-        <div id="fpTrades"><p class="placeholder-text">載入中...</p></div>
-      </div>
+          <!-- 個股詳情（取代舊 fpMiniChartSection）→ 點列才顯示 -->
+          <div class="arena-section" id="fpSymbolDetail" style="display:none;">
+            <!-- 標題列 -->
+            <div class="fp-detail-header">
+              <span class="fp-detail-sym" id="fpDetailSym">—</span>
+              <span class="fp-detail-price" id="fpDetailPrice"></span>
+              <span class="fp-detail-chg" id="fpDetailChg"></span>
+              <button class="fp-detail-order-btn" id="fpDetailOrderBtn" onclick="fpDetailBringToOrder()" style="display:none;">帶入下單</button>
+            </div>
+            <!-- 頁籤列 -->
+            <div class="fp-detail-tabs">
+              <button class="fp-detail-tab active" data-dtab="chart" onclick="fpSwitchDetailTab('chart')">走勢圖</button>
+              <button class="fp-detail-tab" data-dtab="scorecard" onclick="fpSwitchDetailTab('scorecard')">訊號評分</button>
+              <button class="fp-detail-tab" data-dtab="news" onclick="fpSwitchDetailTab('news')">新聞摘要</button>
+              <button class="fp-detail-tab" data-dtab="dossier" onclick="fpSwitchDetailTab('dossier')">AI 檔案</button>
+              <button class="fp-detail-tab" data-dtab="experts" onclick="fpSwitchDetailTab('experts')">專家觀點</button>
+            </div>
+            <!-- 各頁籤內容 -->
+            <div class="fp-detail-pane" id="fpDtabChart">
+              <div class="fp-detail-chart-wrap" id="fpDetailChartWrap"></div>
+            </div>
+            <div class="fp-detail-pane" id="fpDtabScorecard" style="display:none;"></div>
+            <div class="fp-detail-pane" id="fpDtabNews" style="display:none;"></div>
+            <div class="fp-detail-pane" id="fpDtabDossier" style="display:none;"></div>
+            <div class="fp-detail-pane" id="fpDtabExperts" style="display:none;"></div>
+          </div>
 
-      <!-- NAV 曲線 -->
-      <div class="arena-section" id="fpNavSection" style="display:none;">
-        <h2 class="arena-section-title">📈 NAV 曲線：<span id="fpNavPoolName"></span></h2>
-        <div id="fpNavChart"><p class="placeholder-text">載入中...</p></div>
-      </div>
+          <!-- 建池表單 -->
+          <div class="arena-section" id="fpCreateSection">
+            <h2 class="arena-section-title">➕ 建立新資金池</h2>
+            <div class="fp-create-form">
+              <label>名稱：<input type="text" id="fpNewName" placeholder="我的策略池" /></label>
+              <label>初始資金（USD）：<input type="number" id="fpNewCash" value="3000" min="100" step="100" /></label>
+              <button onclick="fpCreatePool()">建立</button>
+              <span id="fpCreateStatus" class="fp-status"></span>
+            </div>
+          </div>
 
-      <!-- 會診紀錄 -->
-      <div class="arena-section" id="fpConsultSection" style="display:none;">
-        <h2 class="arena-section-title">🤝 AI 公司會診紀錄：<span id="fpConsultPoolName"></span></h2>
-        <div id="fpConsultList"><p class="placeholder-text">載入中...</p></div>
-      </div>
+          <!-- 資金池列表 -->
+          <div class="arena-section">
+            <h2 class="arena-section-title">📋 我的資金池</h2>
+            <div id="fpPoolList"><p class="placeholder-text">載入中...</p></div>
+          </div>
+
+          <!-- 下單面板 -->
+          <div class="arena-section" id="fpOrderSection" style="display:none;">
+            <h2 class="arena-section-title">📤 下單：<span id="fpOrderPoolName"></span></h2>
+            <div class="fp-order-form">
+              <label>標的 Symbol：<input type="text" id="fpOrderSymbol" placeholder="NVDA" /></label>
+              <label>方向：
+                <select id="fpOrderSide">
+                  <option value="BUY">BUY（以金額）</option>
+                  <option value="SELL">SELL（以股數）</option>
+                </select>
+              </label>
+              <label id="fpOrderUsdLabel">金額（USD）：<input type="number" id="fpOrderUsd" value="300" min="1" step="10" /></label>
+              <label id="fpOrderQtyLabel" style="display:none;">股數：<input type="number" id="fpOrderQty" value="1" min="0.001" step="0.001" /></label>
+              <label>成交模式：
+                <select id="fpOrderFillMode">
+                  <option value="t1_open">T+1 開盤成交（與 Agent 同規則）</option>
+                  <option value="latest_close">最新收盤價成交（標注 look-ahead）</option>
+                </select>
+              </label>
+              <label>操作理由（必填）：<input type="text" id="fpOrderReason" placeholder="例：動能突破，追高進場" /></label>
+              <div class="fp-order-buttons">
+                <button onclick="fpPlaceOrder()">送出</button>
+                <button onclick="fpAskAI()" class="fp-consult-btn">先問 AI 公司</button>
+              </div>
+              <span id="fpOrderStatus" class="fp-status"></span>
+            </div>
+          </div>
+
+          <!-- 持倉與交易紀錄 -->
+          <div class="arena-section" id="fpDetailSection" style="display:none;">
+            <h2 class="arena-section-title">📊 持倉：<span id="fpDetailPoolName"></span></h2>
+            <div id="fpPositions"><p class="placeholder-text">載入中...</p></div>
+            <h3 class="arena-section-title" style="margin-top:16px;">📜 交易紀錄</h3>
+            <div id="fpTrades"><p class="placeholder-text">載入中...</p></div>
+          </div>
+
+          <!-- NAV 曲線 -->
+          <div class="arena-section" id="fpNavSection" style="display:none;">
+            <h2 class="arena-section-title">📈 NAV 曲線：<span id="fpNavPoolName"></span></h2>
+            <div id="fpNavChart"><p class="placeholder-text">載入中...</p></div>
+          </div>
+
+          <!-- 會診紀錄 -->
+          <div class="arena-section" id="fpConsultSection" style="display:none;">
+            <h2 class="arena-section-title">🤝 AI 公司會診紀錄：<span id="fpConsultPoolName"></span></h2>
+            <div id="fpConsultList"><p class="placeholder-text">載入中...</p></div>
+          </div>
+
+        </div><!-- /.fp-left-col -->
+
+        <!-- ── 右欄：AI 聊天 dock ── -->
+        <div class="fp-right-col">
+          <div id="fpChatDock">
+            <!-- 狀態列：顯示目前選中代號 + 詢問此股按鈕 -->
+            <div class="fp-chat-dock-bar">
+              <span class="fp-chat-dock-title">AI 研究夥伴</span>
+              <span class="fp-chat-dock-sym" id="fpChatDockSym">—</span>
+              <button class="fp-chat-ask-btn" onclick="fpChatAskSym()" id="fpChatAskSymBtn">詢問此股</button>
+            </div>
+            <!-- chat-panel DOM 節點由 JS 搬入 -->
+          </div>
+        </div><!-- /.fp-right-col -->
+
+      </div><!-- /.fp-two-col-grid -->
     </section>
 
     <section class="workbench reveal delay-2">
@@ -521,7 +562,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/app.js?v=20260712-fundpool2"></script>
+  <script src="/app.js?v=20260712-fundpool3"></script>
   <script>
     // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
     if ('serviceWorker' in navigator) {
