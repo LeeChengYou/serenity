@@ -2791,6 +2791,217 @@ window.fpAskAI = async function() {
   });
 })();
 
+// ── 行情看盤板（Market Board）────────────────────────────────────────────────
+
+let _mbData = [];            // 原始 rows
+let _mbSortCol = 'chg_pct'; // 預設按漲跌%排序
+let _mbSortAsc = false;      // 預設降序（漲最多在前）
+let _mbPollTimer = null;
+
+// 格式化數字輔助
+function _mbFmtPct(v) {
+  if (v == null) return '<span class="arena-muted">—</span>';
+  const cls = v >= 0 ? 'arena-pos' : 'arena-neg';
+  const sign = v >= 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toFixed(2)}%</span>`;
+}
+function _mbFmtVol(v) {
+  if (v == null) return '<span class="arena-muted">—</span>';
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + 'K';
+  return String(v);
+}
+
+// 畫 SVG sparkline（30 日走勢）
+function _mbSparkSVG(vals) {
+  if (!vals || vals.length < 2) return '<span class="arena-muted">—</span>';
+  const W = 72, H = 28;
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const range = mx - mn || 1;
+  const pts = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * W;
+    const y = H - ((v - mn) / range) * (H - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const lastUp = vals[vals.length - 1] >= vals[0];
+  const col = lastUp ? '#2e7d32' : '#c62828';
+  return `<svg class="fp-spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+function _mbRenderTable() {
+  const bodyEl = $('fpMarketBody');
+  if (!bodyEl) return;
+  const search = (($('fpMarketSearch') && $('fpMarketSearch').value) || '').trim().toUpperCase();
+  const wlOnly = $('fpMarketWLOnly') && $('fpMarketWLOnly').checked;
+
+  // 過濾
+  let rows = _mbData;
+  if (search) rows = rows.filter(r => r.symbol.includes(search));
+  if (wlOnly) rows = rows.filter(r => r.in_watchlist);
+
+  // watchlist 先行，再按 sort col
+  rows = rows.slice().sort((a, b) => {
+    // watchlist 優先
+    if (a.in_watchlist !== b.in_watchlist) return a.in_watchlist ? -1 : 1;
+    const av = a[_mbSortCol], bv = b[_mbSortCol];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return _mbSortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+  });
+
+  if (!rows.length) {
+    bodyEl.innerHTML = `<tr><td colspan="8" class="placeholder-text" style="text-align:center;padding:16px;">無符合資料</td></tr>`;
+    return;
+  }
+
+  bodyEl.innerHTML = rows.map(r => {
+    const star = r.in_watchlist ? '<span class="fp-wl-star">★</span>' : '<span style="color:var(--muted)">☆</span>';
+    return `<tr class="${r.in_watchlist ? 'fp-row-wl' : ''}" onclick="fpMBSelectRow('${escapeHtml(r.symbol)}')">
+      <td style="text-align:center;">${star}</td>
+      <td class="arena-mono" style="font-weight:700;">${escapeHtml(r.symbol)}</td>
+      <td class="arena-mono">${r.close != null ? '$' + Number(r.close).toFixed(2) : '<span class="arena-muted">—</span>'}</td>
+      <td class="arena-mono">${_mbFmtPct(r.chg_pct)}</td>
+      <td class="arena-mono">${_mbFmtPct(r.chg_5d_pct)}</td>
+      <td class="arena-mono">${_mbFmtVol(r.volume)}</td>
+      <td class="arena-mono" style="text-align:center;">${r.mention_count || 0}</td>
+      <td>${_mbSparkSVG(r.spark)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function fpLoadMarketBoard() {
+  const asOfEl = $('fpMarketAsOf');
+  try {
+    const data = await fetch('/api/pools/market').then(r => r.ok ? r.json() : { rows: [] }).catch(() => ({ rows: [] }));
+    _mbData = data.rows || [];
+    if (asOfEl) {
+      const asOf = data.as_of || '—';
+      asOfEl.textContent = `日線資料 · 最新 ${asOf} · 下單以 T+1 開盤或最新收盤成交`;
+    }
+    _mbRenderTable();
+    // 更新排序 header 高亮
+    _mbApplySortUI();
+  } catch (e) {
+    if (asOfEl) asOfEl.textContent = '載入失敗';
+  }
+}
+
+function _mbApplySortUI() {
+  document.querySelectorAll('.fp-sort-col').forEach(th => {
+    th.classList.remove('fp-sort-asc', 'fp-sort-desc');
+    if (th.dataset.col === _mbSortCol) {
+      th.classList.add(_mbSortAsc ? 'fp-sort-asc' : 'fp-sort-desc');
+    }
+  });
+}
+
+// 點欄位標題排序
+document.addEventListener('DOMContentLoaded', () => {
+  const tbl = $('fpMarketTable');
+  if (!tbl) return;
+  tbl.querySelectorAll('.fp-sort-col').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      if (_mbSortCol === col) {
+        _mbSortAsc = !_mbSortAsc;
+      } else {
+        _mbSortCol = col;
+        _mbSortAsc = false;
+      }
+      _mbApplySortUI();
+      _mbRenderTable();
+    });
+  });
+  const searchEl = $('fpMarketSearch');
+  if (searchEl) searchEl.addEventListener('input', _mbRenderTable);
+  const wlEl = $('fpMarketWLOnly');
+  if (wlEl) wlEl.addEventListener('change', _mbRenderTable);
+});
+
+// 點列 → 帶入下單面板 + 顯示 mini K 線圖
+let _mbMiniChart = null;
+window.fpMBSelectRow = function(symbol) {
+  // 帶入下單面板
+  const symEl = $('fpOrderSymbol');
+  if (symEl) symEl.value = symbol;
+  // 顯示下單面板（若有選池）
+  if (_fpCurrentPoolId) {
+    const sec = $('fpOrderSection');
+    if (sec) { sec.style.display = 'block'; sec.scrollIntoView({ behavior: 'smooth' }); }
+  }
+  // 顯示 mini 圖
+  const miniSec = $('fpMiniChartSection');
+  const miniSymEl = $('fpMiniChartSymbol');
+  const miniWrap = $('fpMiniChartWrap');
+  if (miniSec) miniSec.style.display = 'block';
+  if (miniSymEl) miniSymEl.textContent = symbol;
+  if (miniWrap) {
+    miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">載入中...</p>';
+    // 重用 /api/symbol/ 端點取價格資料
+    fetch(`/api/symbol/${encodeURIComponent(symbol)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || (!data.bars && !data.prices)) {
+          miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">無價格資料</p>';
+          return;
+        }
+        const bars = data.bars || data.prices || [];
+        if (!bars.length) {
+          miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">無價格資料</p>';
+          return;
+        }
+        // 用 LightweightCharts 畫收盤線圖
+        if (_mbMiniChart) { _mbMiniChart.remove(); _mbMiniChart = null; }
+        miniWrap.innerHTML = '';
+        const chart = LightweightCharts.createChart(miniWrap, {
+          width: miniWrap.clientWidth || 400,
+          height: 200,
+          layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#182019' },
+          grid: { vertLines: { color: 'rgba(24,32,25,0.07)' }, horzLines: { color: 'rgba(24,32,25,0.07)' } },
+          rightPriceScale: { borderColor: 'rgba(24,32,25,0.15)' },
+          timeScale: { borderColor: 'rgba(24,32,25,0.15)', timeVisible: false },
+          handleScroll: false, handleScale: false,
+        });
+        const lineSeries = chart.addLineSeries({
+          color: '#1f7a4f', lineWidth: 2,
+          priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: true,
+        });
+        const lineData = bars
+          .filter(b => b.close != null)
+          .slice(-90)  // 最近 90 交易日
+          .map(b => ({ time: b.date, value: b.close }));
+        lineSeries.setData(lineData);
+        chart.timeScale().fitContent();
+        _mbMiniChart = chart;
+        // 響應式寬度
+        const ro = new ResizeObserver(() => {
+          if (_mbMiniChart) _mbMiniChart.applyOptions({ width: miniWrap.clientWidth });
+        });
+        ro.observe(miniWrap);
+      })
+      .catch(() => {
+        miniWrap.innerHTML = '<p class="placeholder-text" style="padding:16px;">載入失敗</p>';
+      });
+  }
+};
+
+// switchGlobalPage 進入資金池分頁時啟動/重啟輪詢
+const _origSwitchGlobalPage = window.switchGlobalPage;
+window.switchGlobalPage = function(page) {
+  if (_origSwitchGlobalPage) _origSwitchGlobalPage(page);
+  if (page === 'fundpool') {
+    fpLoadMarketBoard();
+    if (_mbPollTimer) clearInterval(_mbPollTimer);
+    _mbPollTimer = setInterval(fpLoadMarketBoard, 60000);
+  } else {
+    if (_mbPollTimer) { clearInterval(_mbPollTimer); _mbPollTimer = null; }
+  }
+};
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 init().catch(err => document.body.insertAdjacentHTML('afterbegin', `<pre>${escapeHtml(err.message)}</pre>`));

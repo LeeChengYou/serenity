@@ -186,6 +186,141 @@ def pool_consults_payload(con: sqlite3.Connection, pool_id: str) -> dict:
     return {"consults": consults}
 
 
+def market_board_payload(con: sqlite3.Connection) -> dict:
+    """
+    GET /api/pools/market
+    行情看盤板：涵蓋 prices 表中所有 symbol 的最新日線資料。
+    回傳 as_of、每檔 close / prev_close / chg_pct / chg_5d_pct /
+    volume / in_watchlist / mention_count / spark（最近 30 日收盤）。
+    全部以少量 SQL 批次完成，不做每檔 N 次查詢。
+    """
+    # ── 1. as_of = prices 最大 date ──────────────────────────────────────────
+    as_of_row = con.execute("SELECT MAX(date) FROM prices").fetchone()
+    as_of: str = as_of_row[0] if as_of_row and as_of_row[0] else ""
+
+    if not as_of:
+        return {"as_of": "", "rows": []}
+
+    # ── 2. 最新收盤（t0）與前一交易日收盤（t-1）─────────────────────────────
+    # 每個 symbol 最新兩列 close；用 ROW_NUMBER 分組取前2
+    t01_rows = con.execute(
+        """
+        WITH ranked AS (
+          SELECT symbol, date, close,
+                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+          FROM prices
+        )
+        SELECT symbol, date, close, rn
+        FROM ranked
+        WHERE rn <= 2
+        ORDER BY symbol, rn
+        """
+    ).fetchall()
+
+    sym_t0: dict = {}
+    sym_t1: dict = {}
+    for r in t01_rows:
+        sym = r[0]
+        rn = r[3]
+        c = r[2]
+        if rn == 1:
+            sym_t0[sym] = c
+        else:
+            sym_t1[sym] = c
+
+    # ── 3. 5 個交易日前收盤（t-5）─────────────────────────────────────────────
+    t5_rows = con.execute(
+        """
+        WITH ranked AS (
+          SELECT symbol, close,
+                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+          FROM prices
+        )
+        SELECT symbol, close
+        FROM ranked
+        WHERE rn = 6
+        """
+    ).fetchall()
+    sym_t5: dict = {r[0]: r[1] for r in t5_rows}
+
+    # ── 4. 最新成交量 ──────────────────────────────────────────────────────────
+    vol_rows = con.execute(
+        """
+        WITH ranked AS (
+          SELECT symbol, volume,
+                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+          FROM prices
+        )
+        SELECT symbol, volume
+        FROM ranked
+        WHERE rn = 1
+        """
+    ).fetchall()
+    sym_vol: dict = {r[0]: r[1] for r in vol_rows}
+
+    # ── 5. watchlist ──────────────────────────────────────────────────────────
+    try:
+        wl_rows = con.execute("SELECT symbol FROM watchlist").fetchall()
+        wl_set = {r[0] for r in wl_rows}
+    except Exception:
+        wl_set = set()
+
+    # ── 6. mention_count（全期計數）───────────────────────────────────────────
+    mention_rows = con.execute(
+        "SELECT symbol, COUNT(*) AS cnt FROM mentions GROUP BY symbol"
+    ).fetchall()
+    mention_map: dict = {r[0]: r[1] for r in mention_rows}
+
+    # ── 7. spark：每 symbol 最近 30 個交易日 close（舊→新）─────────────────────
+    spark_rows = con.execute(
+        """
+        WITH ranked AS (
+          SELECT symbol, date, close,
+                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+          FROM prices
+        )
+        SELECT symbol, date, close
+        FROM ranked
+        WHERE rn <= 30
+        ORDER BY symbol, date ASC
+        """
+    ).fetchall()
+    spark_map: dict = {}
+    for r in spark_rows:
+        sym = r[0]
+        c = r[2]
+        if sym not in spark_map:
+            spark_map[sym] = []
+        spark_map[sym].append(c)
+
+    # ── 8. 組裝 rows ─────────────────────────────────────────────────────────
+    symbols = sorted(sym_t0.keys())
+    rows = []
+    for sym in symbols:
+        close = sym_t0[sym]
+        prev_close = sym_t1.get(sym)
+        chg_pct = None
+        if close is not None and prev_close is not None and prev_close != 0:
+            chg_pct = round((close / prev_close - 1) * 100, 4)
+        t5 = sym_t5.get(sym)
+        chg_5d_pct = None
+        if close is not None and t5 is not None and t5 != 0:
+            chg_5d_pct = round((close / t5 - 1) * 100, 4)
+        rows.append({
+            "symbol":        sym,
+            "close":         round(close, 4) if close is not None else None,
+            "prev_close":    round(prev_close, 4) if prev_close is not None else None,
+            "chg_pct":       chg_pct,
+            "chg_5d_pct":    chg_5d_pct,
+            "volume":        sym_vol.get(sym),
+            "in_watchlist":  sym in wl_set,
+            "mention_count": mention_map.get(sym, 0),
+            "spark":         spark_map.get(sym, []),
+        })
+
+    return {"as_of": as_of, "rows": rows}
+
+
 def _calc_mdd(navs: list[float]) -> float:
     """MDD（最大回撤百分點，正值）。"""
     if len(navs) < 2:

@@ -119,6 +119,47 @@
         latest_close 成交模式為輕微 look-ahead，績效統計已標注。
       </div>
 
+      <!-- 行情看盤板 — 建池區塊之上 -->
+      <div class="arena-section" id="fpMarketBoardSection">
+        <div class="fp-market-header">
+          <h2 class="arena-section-title" style="margin:0;">📈 行情看盤</h2>
+          <span id="fpMarketAsOf" class="fp-market-asof">載入中...</span>
+        </div>
+        <div class="fp-market-controls">
+          <input type="text" id="fpMarketSearch" placeholder="搜尋代號 NVDA…" />
+          <label class="fp-market-wl-filter">
+            <input type="checkbox" id="fpMarketWLOnly" />
+            只看觀察清單
+          </label>
+          <span class="fp-market-hint">點列可帶入下單面板</span>
+        </div>
+        <div class="fp-market-table-wrap">
+          <table class="arena-table fp-market-table" id="fpMarketTable">
+            <thead>
+              <tr>
+                <th>★</th>
+                <th>代號</th>
+                <th class="fp-sort-col" data-col="close">最新價</th>
+                <th class="fp-sort-col" data-col="chg_pct">漲跌%</th>
+                <th class="fp-sort-col" data-col="chg_5d_pct">5日%</th>
+                <th class="fp-sort-col" data-col="volume">成交量</th>
+                <th class="fp-sort-col" data-col="mention_count">討論熱度</th>
+                <th>30日走勢</th>
+              </tr>
+            </thead>
+            <tbody id="fpMarketBody">
+              <tr><td colspan="8" class="placeholder-text" style="text-align:center;padding:16px;">載入中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 選股後 K 線圖（下單面板旁） -->
+      <div class="arena-section" id="fpMiniChartSection" style="display:none;">
+        <h2 class="arena-section-title">📊 收盤線圖：<span id="fpMiniChartSymbol"></span></h2>
+        <div id="fpMiniChartWrap" style="height:200px;position:relative;"></div>
+      </div>
+
       <!-- 建池表單 -->
       <div class="arena-section" id="fpCreateSection">
         <h2 class="arena-section-title">➕ 建立新資金池</h2>
@@ -480,7 +521,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/app.js?v=20260712-fundpool1"></script>
+  <script src="/app.js?v=20260712-fundpool2"></script>
   <script>
     // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
     if ('serviceWorker' in navigator) {

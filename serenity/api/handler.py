@@ -42,6 +42,7 @@ from ..services.health import (
 from ..services.watchlist import handle_get_watchlist, handle_post_watchlist
 from ..services.pool_views import (
     pool_list_payload, pool_detail_payload, pool_consults_payload,
+    market_board_payload,
 )
 
 
@@ -284,6 +285,8 @@ class Handler(SimpleHTTPRequestHandler):
             # 資金池 GET 路由
             if path == "/api/pools":
                 return pool_list_payload(con)
+            if path == "/api/pools/market":
+                return market_board_payload(con)
             if path.startswith("/api/pools/") and path.endswith("/consults"):
                 pool_id = path[len("/api/pools/"):-len("/consults")]
                 return pool_consults_payload(con, pool_id)
