@@ -91,6 +91,7 @@ python scripts\daily_check.py repair         # 只重跑不健康的環節，修
 python scripts\daily_check.py run            # 完整跑當日全流程並回報斷點
 python scripts\daily_check.py run --dry-run  # 只列計畫不執行
 python scripts\catchup.py                    # 缺漏多日時的一鍵補跑（含 Arena 回填）
+python scripts\batch_scorecards.py --dry-run # J-13 批次記分卡生成（先看計畫；實跑建議台北 15:10 避 429）
 python scriptsatch_scorecards.py --dry-run   # J-13 批次記分卡生成（先看計畫；實跑建議台北 15:10 避 429）
 ```
 
@@ -106,6 +107,9 @@ python scratch\test_daily_check.py       # daily_check 健康檢查／修復
 python scratch\test_server_refactor.py   # 24 個 API 端點 vs 黃金基準（server 拆模組的行為對照）
 python scratch\test_settings.py          # 設定系統／API key 遮罩（假 key，零外洩驗證）
 python scratch\test_desktop.py           # 桌面殼 --smoke／in-process 管線／bootstrap API
+python scratch\test_health.py            # 資料時效自檢（/api/health＋自動補抓計畫）
+python scratch\test_product_p0.py        # 觀察清單／訊號分布／樣本警語／批次記分卡
+python scratch\test_pwa_auth.py          # PWA＋遠端 token 認證（fail-secure）
 python scratch\test_indicators.py        # 技術指標單元測試
 python scratch\test_signal_rsi_field.py  # 訊號欄位迴歸測試
 
