@@ -462,10 +462,13 @@ class Handler(SimpleHTTPRequestHandler):
                 if not participants:
                     raise _BadRequest("無法確定會診參與者，請指定 participants")
                 backend = fp.GeminiConsultBackend()
-                consult_id = fp.run_consult(
-                    con, pool_id, question, symbol or "",
-                    participants, as_of, backend,
-                )
+                try:
+                    consult_id = fp.run_consult(
+                        con, pool_id, question, symbol or "",
+                        participants, as_of, backend,
+                    )
+                except ValueError as e:
+                    raise _BadRequest(str(e))
                 return {"consult_id": consult_id, "pool_id": pool_id}
             finally:
                 con.close()

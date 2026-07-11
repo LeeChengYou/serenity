@@ -113,23 +113,28 @@ def create_pool(
     """
     建立模擬資金池。
     回傳 pool_id='pool-<slug>'。
-    同名池已存在 → raise ValueError。
+    slug（pool_id）已存在 → raise ValueError。
+    initial_cash <= 0 → raise ValueError。
     """
+    # M3: initial_cash 必須 > 0
+    if not isinstance(initial_cash, (int, float)) or initial_cash <= 0:
+        raise ValueError(f"initial_cash 必須大於 0，收到 {initial_cash!r}")
+
     slug = _slugify(name)
     pool_id = f"pool-{slug}"
     now_iso = created_at or datetime.utcnow().isoformat()
 
-    # 同名重複檢查（display_name 唯一性）
+    # M2: 對 pool_id（slug）做唯一性檢查
     existing = con.execute(
-        "SELECT agent_id FROM pools WHERE display_name=?", (name,)
+        "SELECT agent_id FROM pools WHERE agent_id=?", (pool_id,)
     ).fetchone()
     if existing:
-        raise ValueError(f"資金池名稱 '{name}' 已存在（id={existing['agent_id']}）")
+        raise ValueError(f"資金池 slug '{pool_id}' 已存在（display_name 碰撞）")
 
     # --- agents 表 seed ---
     con.execute(
         """
-        INSERT OR IGNORE INTO agents
+        INSERT INTO agents
             (id, domain, style_seed, backend, status, relaunches, hwm, created_at)
         VALUES (?, 'human', 'human', 'human', 'active', 0, ?, ?)
         """,
@@ -140,7 +145,7 @@ def create_pool(
     month_key = now_iso[:7]
     con.execute(
         """
-        INSERT OR IGNORE INTO agent_state (agent_id, month, cash, nav, updated_at)
+        INSERT INTO agent_state (agent_id, month, cash, nav, updated_at)
         VALUES (?, ?, ?, ?, ?)
         """,
         (pool_id, month_key, initial_cash, initial_cash, now_iso),
@@ -149,7 +154,7 @@ def create_pool(
     # --- pools 表 seed ---
     con.execute(
         """
-        INSERT OR IGNORE INTO pools
+        INSERT INTO pools
             (agent_id, display_name, initial_cash, status, created_at)
         VALUES (?, ?, ?, 'active', ?)
         """,
@@ -329,14 +334,20 @@ def place_order(
     cash = _get_current_cash(con, pool_id)
 
     if side.upper() == "BUY":
+        # M1: usd 必須為正數，在寫入任何東西之前擋掉
+        if usd is None or usd <= 0:
+            return reject(f"BUY 下單 usd 必須 > 0，收到 {usd!r}")
         # 4. 現金不足
-        if (usd or 0.0) > cash:
+        if usd > cash:
             return reject(f"現金不足：需 {usd:.2f}，現有 {cash:.2f}")
 
     elif side.upper() == "SELL":
+        # M1: qty 必須為正數，在寫入任何東西之前擋掉
+        if qty is None or qty <= 0:
+            return reject(f"SELL 下單 qty 必須 > 0，收到 {qty!r}")
         # 5. 持倉不足
         holding = _get_holding_qty(con, pool_id, symbol)
-        if (qty or 0.0) > holding:
+        if qty > holding:
             return reject(f"持倉不足：要賣 {qty} 股，實際持有 {holding:.4f} 股")
     else:
         return reject(f"side 必須為 BUY 或 SELL，收到 {side!r}")
@@ -512,6 +523,14 @@ def run_consult(
       2. 綜合輪：≥1 份非 absent 意見 → backend.synthesize()；全 absent → summary=NULL。
       3. 落庫 pool_consults + pool_consult_opinions。
     """
+    # W1: participants 空列表或超過上限 → raise ValueError，不呼叫任何 opine（省配額）
+    if not participants:
+        raise ValueError("participants 不能為空列表")
+    if len(participants) > CONSULT_MAX_PARTICIPANTS:
+        raise ValueError(
+            f"participants 數量 {len(participants)} 超過上限 {CONSULT_MAX_PARTICIPANTS}"
+        )
+
     now_iso = datetime.utcnow().isoformat()
 
     # 取得本池同 symbol 最近 CONSULT_MEMORY_K 次會診（記憶注入）
