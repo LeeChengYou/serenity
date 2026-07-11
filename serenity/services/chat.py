@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 
-from ..config import DB_PATH, ROOT
+from ..config import DB_PATH, ROOT, get_setting
 from ..db import db
 from ..gemini import call_gemini
 from ..keypool import _key_manager
@@ -176,7 +176,7 @@ def handle_chat_api(payload):
     # 3. Call LLM or fallback
     if _key_manager.has_any_key():
         try:
-            model_name = payload.get("model") or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            model_name = payload.get("model") or get_setting("gemini_model")
 
             contents = []
             for msg in messages:
@@ -268,7 +268,7 @@ def extract_memory_task(messages, ai_reply):
         "]"
     )
 
-    model_name = os.environ.get("GEMINI_MEMORY_MODEL", "gemini-2.0-flash-lite")
+    model_name = get_setting("gemini_memory_model")
 
     try:
         res_data = call_gemini(

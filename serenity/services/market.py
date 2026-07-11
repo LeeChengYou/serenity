@@ -18,7 +18,28 @@ def summary(con):
                (select max(mentioned_at) from mentions) latest_mention,
                (select count(distinct symbol) from prices) priced_symbols
     """)
-    symbols = []
+
+    # signal_distribution: counts per signal on the latest date
+    signal_distribution = {}
+    try:
+        date_row = con.execute(
+            "select max(date) from signal_history"
+        ).fetchone()
+        sig_date = date_row[0] if date_row else None
+        if sig_date:
+            sig_rows = con.execute(
+                "select signal, count(*) cnt from signal_history where date=? group by signal",
+                (sig_date,),
+            ).fetchall()
+            signal_distribution = {
+                "date": sig_date,
+                "counts": {r[0]: r[1] for r in sig_rows},
+            }
+    except Exception:
+        pass
+
+    # mentions-based symbols
+    mentions_rows = {}
     for r in con.execute("""
         select m.symbol, count(*) mention_count, max(m.mentioned_at) latest_mention,
                min(m.mentioned_at) first_mention,
@@ -31,8 +52,50 @@ def summary(con):
     """):
         d = dict(r)
         d["has_prices"] = bool(d.pop("price_bars"))
-        symbols.append(d)
-    return {"stats": stats, "symbols": symbols}
+        mentions_rows[d["symbol"]] = d
+
+    # watchlist-only symbols (not in mentions)
+    watchlist_only = []
+    try:
+        wl_rows = con.execute(
+            "select symbol, added_at from watchlist order by symbol"
+        ).fetchall()
+        for wr in wl_rows:
+            sym = wr[0]
+            if sym not in mentions_rows:
+                # Build a stub entry for watchlist-only symbols
+                last_close = None
+                last_price_date = None
+                price_bars = 0
+                try:
+                    pr = con.execute(
+                        "select close, date from prices where symbol=? order by date desc limit 1",
+                        (sym,),
+                    ).fetchone()
+                    if pr:
+                        last_close = pr[0]
+                        last_price_date = pr[1]
+                    price_bars = con.execute(
+                        "select count(*) from prices where symbol=?", (sym,)
+                    ).fetchone()[0]
+                except Exception:
+                    pass
+                watchlist_only.append({
+                    "symbol": sym,
+                    "mention_count": 0,
+                    "latest_mention": None,
+                    "first_mention": None,
+                    "last_close": last_close,
+                    "last_price_date": last_price_date,
+                    "has_prices": bool(price_bars),
+                })
+    except Exception:
+        pass
+
+    # Combine: mentions-based first (sorted by mention_count desc), then watchlist-only (alpha)
+    symbols = list(mentions_rows.values()) + watchlist_only
+
+    return {"stats": stats, "symbols": symbols, "signal_distribution": signal_distribution}
 
 
 def symbol_payload(con, symbol):

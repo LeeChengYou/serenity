@@ -443,9 +443,18 @@ def hitrate_payload(con) -> dict:
             "source": "reconstructed",
         })
 
+    # sample_days: distinct dates in signal_history
+    sample_days = 0
+    try:
+        row = con.execute("select count(distinct date) from signal_history").fetchone()
+        sample_days = row[0] if row else 0
+    except Exception:
+        pass
+
     return {
         "as_of": as_of,
         "live_since": live_since,
+        "sample_days": sample_days,
         "summary": summary,
         "recent_calls": live.get("calls", [])[:50],
         # Kept for transparency/debugging: full per-source detail

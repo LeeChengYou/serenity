@@ -54,10 +54,13 @@ def _get_serenity_home() -> Path:
 
 SERENITY_HOME: Path = _get_serenity_home()
 
-# ── DB_PATH：frozen 時用 SERENITY_HOME；開發模式用 repo data/（開發模式例外）────
-if getattr(sys, "frozen", False):
+# ── DB_PATH：解析順序：SERENITY_DB_PATH env > frozen→SERENITY_HOME > repo data/ > SERENITY_HOME
+if os.environ.get("SERENITY_DB_PATH"):
+    # 環境變數直接覆寫（與 scorer skill 同名，供測試隔離）
+    DB_PATH: Path = Path(os.environ["SERENITY_DB_PATH"])
+elif getattr(sys, "frozen", False):
     # 打包執行：資料庫存放在使用者目錄
-    DB_PATH: Path = SERENITY_HOME / "serenity.sqlite"
+    DB_PATH = SERENITY_HOME / "serenity.sqlite"
 else:
     # 開發模式例外：repo data/ 存在就用 repo 路徑（維持現有排程/測試行為不變）
     _repo_db = ROOT / "data" / "serenity.sqlite"

@@ -51,6 +51,10 @@
     </nav>
 
     <section class="kpis reveal delay-1" id="kpis"></section>
+    <!-- P0: 訊號分布列 -->
+    <div id="signal-distribution" style="display:none; padding: 6px 16px; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--line); background: rgba(0,0,0,0.02);">
+      今日訊號分布：<span id="signal-distribution-text">載入中...</span>
+    </div>
 
     <!-- Hit-rate page (global, not per-symbol) — hidden by default -->
     <section id="hitrateView" class="hitrate-view" style="display:none;">
@@ -339,6 +343,19 @@
       <div class="settings-model-row">
         <label for="settingsMemoryModel">gemini_memory_model（記憶摘要）</label>
         <input type="text" id="settingsMemoryModel" placeholder="gemini-2.0-flash" />
+      </div>
+
+      <!-- P0: 觀察清單 -->
+      <div class="settings-section-title">觀察清單（Watchlist）</div>
+      <div id="watchlist-settings-container" style="margin-bottom: 8px; font-size: 13px;">
+        <div id="watchlist-symbols-list" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; min-height: 28px;">
+          <span style="color: var(--muted);">載入中...</span>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="text" id="watchlistAddInput" placeholder="輸入代號，例如 TSLA" style="font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: rgba(255,255,255,0.6); outline: none; width: 140px;" />
+          <button onclick="watchlistAdd()" style="font-size: 12px; font-weight: bold; background: var(--green); color: white; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer;">新增</button>
+          <span id="watchlistAddStatus" style="font-size: 11px; color: var(--muted);"></span>
+        </div>
       </div>
 
       <!-- Actions -->

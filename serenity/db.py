@@ -6,6 +6,14 @@ db(), _init_schema, _schema_initialized, _table_exists, one()
 import sqlite3
 from .config import DB_PATH
 
+# 預設觀察清單（20 檔半導體與科技龍頭）
+DEFAULT_WATCHLIST = [
+    "NVDA", "TSM", "AMD", "AVGO", "ASML",
+    "MU", "ARM", "INTC", "QCOM", "MRVL",
+    "AMAT", "LRCX", "KLAC", "VRT", "SMCI",
+    "MSFT", "GOOGL", "AAPL", "META", "ORCL",
+]
+
 _schema_initialized = False
 
 
@@ -157,6 +165,13 @@ def _init_schema(con):
         create index if not exists idx_expert_views_published
             on expert_views(published_at desc)
     """)
+    # P0: watchlist table (idempotent)
+    con.execute("""
+        create table if not exists watchlist (
+            symbol   text primary key,
+            added_at text not null
+        )
+    """)
     for idx_name, tbl_name, col in [
         ("idx_mentions_symbol", "mentions", "symbol"),
         ("idx_prices_symbol_date", "prices", "symbol, date"),
@@ -167,6 +182,25 @@ def _init_schema(con):
         except Exception:
             pass
     con.commit()
+
+    # 空 DB（mentions=0 且 watchlist=0）→ 自動種入預設觀察清單
+    try:
+        mentions_count = con.execute("select count(*) from mentions").fetchone()[0]
+    except Exception:
+        mentions_count = 0
+    try:
+        wl_count = con.execute("select count(*) from watchlist").fetchone()[0]
+    except Exception:
+        wl_count = 0
+    if mentions_count == 0 and wl_count == 0:
+        from datetime import datetime as _dt
+        _now = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        for sym in DEFAULT_WATCHLIST:
+            con.execute(
+                "insert or ignore into watchlist(symbol, added_at) values (?, ?)",
+                (sym, _now),
+            )
+        con.commit()
 
 
 def _table_exists(con, table_name: str) -> bool:

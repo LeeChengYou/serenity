@@ -8,7 +8,7 @@ import json
 import os
 from datetime import datetime
 
-from ..config import DB_PATH
+from ..config import DB_PATH, get_setting
 from ..db import db
 from ..gemini import call_gemini
 from ..keypool import _key_manager
@@ -82,7 +82,7 @@ def handle_translate_api(payload: dict) -> dict:
 
     # --- 3. Single Gemini call for all uncached texts ---
     uncached_texts = [texts[i] for i in uncached_indices]
-    translate_model = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-2.5-flash-lite")
+    translate_model = get_setting("gemini_translate_model")
 
     system_prompt = (
         "你是一個專業的財經新聞翻譯員。請將使用者提供的英文文本翻譯成台灣繁體中文。\n"

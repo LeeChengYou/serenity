@@ -439,14 +439,29 @@ def fetch_x(max_pages=20, pause=0.8):
 
 
 def symbol_list(con, min_mentions=2):
-    """Return tracked symbols ordered by mention count, excluding benchmark indices."""
+    """Return tracked symbols: mentions(≥min_mentions) ∪ watchlist, excluding benchmark indices.
+    watchlist-only symbols are appended at the end in alphabetical order."""
     rows = con.execute("""
         select symbol from mentions
         group by symbol
         having count(*) >= ?
         order by count(*) desc, symbol
     """, (min_mentions,)).fetchall()
-    return [r[0] for r in rows if r[0] not in BENCHMARK_SYMBOLS]
+    mention_syms = [r[0] for r in rows if r[0] not in BENCHMARK_SYMBOLS]
+    mention_set = set(mention_syms)
+
+    # Union watchlist (容錯：表不存在時跳過)
+    watchlist_only = []
+    try:
+        wl_rows = con.execute("select symbol from watchlist order by symbol").fetchall()
+        for wr in wl_rows:
+            sym = wr[0]
+            if sym not in mention_set and sym not in BENCHMARK_SYMBOLS:
+                watchlist_only.append(sym)
+    except Exception:
+        pass
+
+    return mention_syms + watchlist_only
 
 
 def yahoo_chart(symbol, start, end, max_retries=3):

@@ -7,7 +7,7 @@ import json
 import os
 from datetime import datetime
 
-from ..config import DB_PATH
+from ..config import DB_PATH, get_setting
 from ..db import _table_exists
 from ..gemini import call_gemini
 from ..keypool import _key_manager
@@ -376,7 +376,7 @@ def dossier_payload(con, symbol: str, refresh: bool = False) -> dict:
                 + json.dumps(prompt_data, ensure_ascii=False, indent=2)
             )
 
-            model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            model_name = get_setting("gemini_model")
             res_data = call_gemini(
                 model_name=model_name,
                 contents=[{"role": "user", "parts": [{"text": user_text}]}],

@@ -51,6 +51,7 @@
     "as_of",
     "live_since",
     "recent_calls",
+    "sample_days",
     "sources",
     "summary"
    ]
@@ -72,6 +73,7 @@
   "shape": {
    "type": "dict",
    "keys": [
+    "signal_distribution",
     "stats",
     "symbols"
    ]
@@ -258,7 +260,8 @@
    "type": "dict",
    "keys": [
     "month",
-    "rows"
+    "rows",
+    "sample_days"
    ]
   }
  },

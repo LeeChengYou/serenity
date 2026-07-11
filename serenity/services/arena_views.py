@@ -76,7 +76,15 @@ def arena_leaderboard_payload(con, month: str) -> dict:
         dom_seen[c["domain"]] = dom_seen.get(c["domain"], 0) + 1
         c["rank_domain"] = dom_seen[c["domain"]]
 
-    return {"month": month, "rows": computed}
+    # sample_days: distinct dates in agent_nav_daily
+    sample_days = 0
+    try:
+        row = con.execute("select count(distinct date) from agent_nav_daily").fetchone()
+        sample_days = row[0] if row else 0
+    except Exception:
+        pass
+
+    return {"month": month, "rows": computed, "sample_days": sample_days}
 
 
 def arena_nav_payload(con, month: str) -> dict:

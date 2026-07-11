@@ -38,6 +38,7 @@ from ..services.health import (
     health_payload, get_stale_domains, refresh_status,
     run_refresh, is_running,
 )
+from ..services.watchlist import handle_get_watchlist, handle_post_watchlist
 
 
 class _BadRequest(Exception):
@@ -150,6 +151,9 @@ class Handler(SimpleHTTPRequestHandler):
             return {"error": f"database not found: {DB_PATH}"}
         con = db()
         try:
+            # --- P0: Watchlist GET ---
+            if path == "/api/watchlist":
+                return handle_get_watchlist(con)
             # --- R3-2 Regime gauge ---
             if path == "/api/regime":
                 return regime_payload(con)
@@ -283,6 +287,22 @@ class Handler(SimpleHTTPRequestHandler):
                 raise _BadRequest(str(e))
         if path == "/api/settings/test":
             return handle_test_key(payload)
+        # P0: Watchlist POST
+        if path == "/api/watchlist":
+            if not DB_PATH.exists():
+                self.send_json({"error": f"database not found: {DB_PATH}"}, status=500)
+                return {"error": "db missing"}
+            con = db()
+            try:
+                try:
+                    resp, status = handle_post_watchlist(con, payload)
+                except ValueError as e:
+                    raise _BadRequest(str(e))
+            finally:
+                con.close()
+            if status != 200:
+                raise _HTTPResponse(resp, status)
+            return resp
         if path == "/api/chat":
             return handle_chat_api(payload)
         # R4-2: translation endpoint

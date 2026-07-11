@@ -1561,6 +1561,7 @@ async function init() {
     const summary = await json('/api/summary');
     state.symbols = summary.symbols || [];
     renderKpis(summary.stats || {});
+    renderSignalDistribution(summary.signal_distribution || {});
 
     // 階段三：Onboarding 引導（has_key=true 且資料庫空白時顯示）
     if (_settingsState && _settingsState.has_key && state.symbols.length === 0) {
@@ -2341,6 +2342,92 @@ function _pollHealthRefreshStatus() {
 
 // 每 10 分鐘自動重查健康狀態
 setInterval(loadHealthBadge, 10 * 60 * 1000);
+
+// ── P0: 訊號分布 ──────────────────────────────────────────────────────────────
+
+function renderSignalDistribution(dist) {
+  const el = $('signal-distribution');
+  const txt = $('signal-distribution-text');
+  if (!el || !txt) return;
+  if (!dist || !dist.date) { el.style.display = 'none'; return; }
+  const counts = dist.counts || {};
+  const ORDER = ['BUY_WATCH', 'NEUTRAL', 'HOLD', 'EXIT_ALERT'];
+  const LABELS = { BUY_WATCH: '🟢買入觀察', NEUTRAL: '⚪中性', HOLD: '🔵持有', EXIT_ALERT: '🔴出場警報' };
+  const parts = ORDER.map(sig => `${LABELS[sig]} ${counts[sig] ?? 0}`);
+  txt.textContent = parts.join('｜');
+  el.style.display = 'block';
+}
+
+// ── P0: 觀察清單 (Watchlist) ──────────────────────────────────────────────────
+
+async function loadWatchlistSettings() {
+  const container = $('watchlist-symbols-list');
+  if (!container) return;
+  try {
+    const d = await json('/api/watchlist');
+    const syms = d.symbols || [];
+    if (syms.length === 0) {
+      container.innerHTML = '<span style="color: var(--muted); font-size: 12px;">（清單為空）</span>';
+      return;
+    }
+    container.innerHTML = syms.map(s =>
+      `<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(0,0,0,0.06);border-radius:999px;padding:2px 8px 2px 10px;font-size:12px;">
+        <b>${escapeHtml(s.symbol)}</b>
+        <button onclick="watchlistRemove('${escapeHtml(s.symbol)}')" title="移除" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:11px;padding:0 0 0 2px;line-height:1;">✕</button>
+      </span>`
+    ).join('');
+  } catch(e) {
+    container.innerHTML = '<span style="color:red;font-size:12px;">載入失敗</span>';
+  }
+}
+
+async function watchlistAdd() {
+  const input = $('watchlistAddInput');
+  const status = $('watchlistAddStatus');
+  if (!input) return;
+  const sym = input.value.trim();
+  if (!sym) return;
+  if (status) status.textContent = '新增中...';
+  try {
+    const resp = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: sym }),
+    });
+    if (resp.ok) {
+      input.value = '';
+      if (status) status.textContent = '已加入，價格抓取中…稍後重新整理';
+      setTimeout(() => { if (status) status.textContent = ''; }, 4000);
+      await loadWatchlistSettings();
+    } else {
+      const d = await resp.json();
+      if (status) status.textContent = `錯誤：${d.error || resp.status}`;
+    }
+  } catch(e) {
+    if (status) status.textContent = `錯誤：${e.message}`;
+  }
+}
+
+async function watchlistRemove(sym) {
+  const status = $('watchlistAddStatus');
+  try {
+    await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remove: sym }),
+    });
+    await loadWatchlistSettings();
+  } catch(e) {
+    if (status) status.textContent = `移除失敗：${e.message}`;
+  }
+}
+
+// 開啟設定 modal 時載入觀察清單
+const _origOpenSettingsModal = window.openSettingsModal;
+window.openSettingsModal = function() {
+  if (_origOpenSettingsModal) _origOpenSettingsModal();
+  loadWatchlistSettings();
+};
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 

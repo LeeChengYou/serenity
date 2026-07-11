@@ -7,6 +7,7 @@ import json
 import os
 from datetime import datetime
 
+from ..config import get_setting
 from ..db import db
 from ..gemini import call_gemini
 
@@ -67,7 +68,7 @@ def generate_scorecard(symbol: str) -> dict:
             "注意：請用台灣繁體中文寫所有內容。"
         )
 
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        model_name = get_setting("gemini_model")
         res_data = call_gemini(
             model_name=model_name,
             contents=[{"role": "user", "parts": [{"text": f"請對個股 {symbol} 進行定性供應鏈瓶頸分析。本機資料庫相關貼文如下：\n{tweets_text}"}]}],
@@ -125,7 +126,7 @@ def generate_scorecard(symbol: str) -> dict:
             verdict = "Early lead or low priority"
 
         now_str = datetime.now().isoformat()
-        model_name_used = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        model_name_used = get_setting("gemini_model")
         con = db()
         try:
             # Task D (SPEC F-03): archive existing scorecard to history
