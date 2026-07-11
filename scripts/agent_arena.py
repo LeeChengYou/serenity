@@ -1049,19 +1049,20 @@ def run_daily(
     # 2. Get agents to process
     if only_agents:
         agents = con.execute(
-            "select id, domain, style_seed from agents where id in ({}) and status='active'".format(
+            "select id, domain, style_seed, backend from agents where id in ({}) and status='active'".format(
                 ",".join("?" * len(only_agents))
             ),
             only_agents
         ).fetchall()
     else:
         agents = con.execute(
-            "select id, domain, style_seed from agents where status='active'"
+            "select id, domain, style_seed, backend from agents where status='active'"
         ).fetchall()
 
     for agent in agents:
         agent_id = agent["id"]
         domain = agent["domain"]
+        agent_backend = agent["backend"] if "backend" in agent.keys() else "gemini"
 
         # Idempotency: skip if already processed today
         existing = con.execute(
@@ -1069,6 +1070,11 @@ def run_daily(
             (agent_id, as_of)
         ).fetchone()
         if existing:
+            continue
+
+        # backend='human' 的池：跳過簡報/decide/下單/memory，只記 NAV
+        if agent_backend == "human":
+            _record_nav(con, agent_id, as_of)
             continue
 
         # 3. Generate briefing
@@ -1181,13 +1187,17 @@ def run_monthly(
     data_dir = Path(data_dir) if data_dir else DEFAULT_DATA_DIR
 
     agents = con.execute(
-        "select id, domain, style_seed from agents"
+        "select id, domain, style_seed, backend from agents"
     ).fetchall()
 
-    # Gather NAV data for the month
+    # Gather NAV data for the month（排除 backend='human' 的池，不參與淘汰/relaunch/reflect）
     agent_data = {}
     for agent in agents:
         agent_id = agent["id"]
+        agent_backend = agent["backend"] if "backend" in agent.keys() else "gemini"
+        # human 池不參與月度結算流程
+        if agent_backend == "human":
+            continue
         nav_rows = con.execute(
             "select date, nav from agent_nav_daily where agent_id=? and date like ? order by date",
             (agent_id, month + "%")
@@ -1231,7 +1241,7 @@ def run_monthly(
         for rank, (aid, _) in enumerate(sorted_items, 1):
             domain_ranks[aid] = rank
 
-    # Process each agent
+    # Process each agent（human 池已在資料收集階段排除，此處只處理 AI agent）
     for agent_id, d in agent_data.items():
         # Idempotency
         existing = con.execute(

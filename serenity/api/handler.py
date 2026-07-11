@@ -40,6 +40,9 @@ from ..services.health import (
     run_refresh, is_running,
 )
 from ..services.watchlist import handle_get_watchlist, handle_post_watchlist
+from ..services.pool_views import (
+    pool_list_payload, pool_detail_payload, pool_consults_payload,
+)
 
 
 class _BadRequest(Exception):
@@ -278,6 +281,15 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/arena/reflections":
                 month = (query.get("month") or [datetime.now().strftime("%Y-%m")])[0]
                 return arena_reflections_payload(con, month)
+            # 資金池 GET 路由
+            if path == "/api/pools":
+                return pool_list_payload(con)
+            if path.startswith("/api/pools/") and path.endswith("/consults"):
+                pool_id = path[len("/api/pools/"):-len("/consults")]
+                return pool_consults_payload(con, pool_id)
+            if path.startswith("/api/pools/"):
+                pool_id = path[len("/api/pools/"):]
+                return pool_detail_payload(con, pool_id)
         finally:
             con.close()
         return {"error": "unknown api"}
@@ -350,4 +362,111 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith("/api/scorecard/generate/"):
             symbol = unquote(path.rsplit("/", 1)[-1]).upper().strip()
             return generate_scorecard(symbol)
+        # 資金池 POST 路由
+        if path == "/api/pools":
+            # 建池：name, initial_cash
+            import sys as _sys
+            _scripts = str(DB_PATH.parent.parent / "scripts")
+            if _scripts not in _sys.path:
+                _sys.path.insert(0, _scripts)
+            import fund_pool as fp
+            con = db()
+            try:
+                fp.migrate(con)
+                name = payload.get("name", "").strip()
+                if not name:
+                    raise _BadRequest("name 不能為空")
+                initial_cash = float(payload.get("initial_cash", fp.DEFAULT_INITIAL_CASH))
+                try:
+                    pool_id = fp.create_pool(con, name, initial_cash)
+                except ValueError as e:
+                    raise _BadRequest(str(e))
+                return {"pool_id": pool_id, "name": name, "initial_cash": initial_cash}
+            finally:
+                con.close()
+        if path.startswith("/api/pools/") and path.endswith("/archive"):
+            pool_id = path[len("/api/pools/"):-len("/archive")]
+            import sys as _sys
+            _scripts = str(DB_PATH.parent.parent / "scripts")
+            if _scripts not in _sys.path:
+                _sys.path.insert(0, _scripts)
+            import fund_pool as fp
+            con = db()
+            try:
+                fp.archive_pool(con, pool_id)
+                return {"success": True, "pool_id": pool_id}
+            finally:
+                con.close()
+        if path.startswith("/api/pools/") and path.endswith("/orders"):
+            pool_id = path[len("/api/pools/"):-len("/orders")]
+            import sys as _sys
+            _scripts = str(DB_PATH.parent.parent / "scripts")
+            if _scripts not in _sys.path:
+                _sys.path.insert(0, _scripts)
+            import fund_pool as fp
+            con = db()
+            try:
+                fp.migrate(con)
+                side = (payload.get("side") or "").upper()
+                symbol = (payload.get("symbol") or "").upper()
+                reason = payload.get("reason", "")
+                fill_mode = payload.get("fill_mode", "t1_open")
+                # as_of 可省略 = prices 最新日
+                as_of = payload.get("as_of")
+                if not as_of:
+                    row = con.execute("SELECT MAX(date) FROM prices").fetchone()
+                    as_of = row[0] if row and row[0] else datetime.now().strftime("%Y-%m-%d")
+                usd = payload.get("usd")
+                qty = payload.get("qty")
+                if usd is not None:
+                    usd = float(usd)
+                if qty is not None:
+                    qty = float(qty)
+                result = fp.place_order(
+                    con, pool_id, side, symbol,
+                    usd=usd, qty=qty, reason=reason,
+                    fill_mode=fill_mode, as_of=as_of,
+                )
+                return result
+            finally:
+                con.close()
+        if path.startswith("/api/pools/") and path.endswith("/consult"):
+            pool_id = path[len("/api/pools/"):-len("/consult")]
+            import sys as _sys
+            _scripts = str(DB_PATH.parent.parent / "scripts")
+            if _scripts not in _sys.path:
+                _sys.path.insert(0, _scripts)
+            import fund_pool as fp
+            con = db()
+            try:
+                fp.migrate(con)
+                question = payload.get("question", "").strip()
+                if not question:
+                    raise _BadRequest("question 不能為空")
+                symbol = (payload.get("symbol") or "").upper() or None
+                participants = payload.get("participants")
+                as_of = payload.get("as_of")
+                if not as_of:
+                    row = con.execute("SELECT MAX(date) FROM prices").fetchone()
+                    as_of = row[0] if row and row[0] else datetime.now().strftime("%Y-%m-%d")
+                if not participants and symbol:
+                    # 預設：該 symbol 所屬領域前 3 agent
+                    import agent_arena as arena
+                    participants = []
+                    for domain, syms in arena.DOMAINS.items():
+                        if symbol in syms:
+                            for style in ["momentum", "dip", "catalyst"]:
+                                participants.append(f"{domain}-{style}")
+                            break
+                    participants = participants[:fp.CONSULT_MAX_PARTICIPANTS]
+                if not participants:
+                    raise _BadRequest("無法確定會診參與者，請指定 participants")
+                backend = fp.GeminiConsultBackend()
+                consult_id = fp.run_consult(
+                    con, pool_id, question, symbol or "",
+                    participants, as_of, backend,
+                )
+                return {"consult_id": consult_id, "pool_id": pool_id}
+            finally:
+                con.close()
         return {"error": "unknown api"}

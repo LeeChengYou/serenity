@@ -17,7 +17,7 @@ def arena_leaderboard_payload(con, month: str) -> dict:
     SEED = 3000.0
     try:
         agent_rows = con.execute(
-            "select id as agent_id, domain from agents order by id"
+            "select id as agent_id, domain, backend from agents order by id"
         ).fetchall()
     except Exception:
         agent_rows = []
@@ -34,7 +34,19 @@ def arena_leaderboard_payload(con, month: str) -> dict:
             continue
 
         latest_nav = navs[-1]["nav"]
-        ret_pct = (latest_nav / SEED - 1.0) * 100.0
+        # human 池：用 initial_cash 作為 SEED（若有 pools 表記錄）；否則用全域 SEED
+        agent_backend = a["backend"] if "backend" in a.keys() else "gemini"
+        if agent_backend == "human":
+            try:
+                pool_row = con.execute(
+                    "select initial_cash from pools where agent_id=?", (agent_id,)
+                ).fetchone()
+                seed_val = pool_row["initial_cash"] if pool_row else SEED
+            except Exception:
+                seed_val = SEED
+        else:
+            seed_val = SEED
+        ret_pct = (latest_nav / seed_val - 1.0) * 100.0 if seed_val else 0.0
 
         # Max drawdown over the month's NAV path (<= 0)
         peak = None
@@ -56,6 +68,9 @@ def arena_leaderboard_payload(con, month: str) -> dict:
             (agent_id, month + "%")
         ).fetchone()[0]
 
+        # kind 欄：'human' 或 'ai'
+        kind = "human" if agent_backend == "human" else "ai"
+
         computed.append({
             "agent_id":   agent_id,
             "domain":     a["domain"],
@@ -63,6 +78,7 @@ def arena_leaderboard_payload(con, month: str) -> dict:
             "mdd_pct":    mdd,
             "n_trades":   n_trades,
             "latest_nav": latest_nav,
+            "kind":       kind,
         })
 
     # Overall rank by return descending

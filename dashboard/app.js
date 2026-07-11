@@ -1057,6 +1057,7 @@ window.switchGlobalPage = function(page) {
   const workbench = document.querySelector('.workbench');
   const hitrate   = $('hitrateView');
   const arena     = $('arenaView');
+  const fundpool  = $('fundpoolView');
 
   document.querySelectorAll('.global-page-nav button').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.page === page));
@@ -1066,18 +1067,28 @@ window.switchGlobalPage = function(page) {
     if (workbench) workbench.style.display  = '';
     if (hitrate)   hitrate.style.display    = 'none';
     if (arena)     arena.style.display      = 'none';
+    if (fundpool)  fundpool.style.display   = 'none';
   } else if (page === 'hitrate') {
     if (kpis)      kpis.style.display      = 'none';
     if (workbench) workbench.style.display  = 'none';
     if (hitrate)   hitrate.style.display    = 'block';
     if (arena)     arena.style.display      = 'none';
+    if (fundpool)  fundpool.style.display   = 'none';
     loadHitRate();
   } else if (page === 'arena') {
     if (kpis)      kpis.style.display      = 'none';
     if (workbench) workbench.style.display  = 'none';
     if (hitrate)   hitrate.style.display    = 'none';
     if (arena)     arena.style.display      = 'block';
+    if (fundpool)  fundpool.style.display   = 'none';
     loadArena();
+  } else if (page === 'fundpool') {
+    if (kpis)      kpis.style.display      = 'none';
+    if (workbench) workbench.style.display  = 'none';
+    if (hitrate)   hitrate.style.display    = 'none';
+    if (arena)     arena.style.display      = 'none';
+    if (fundpool)  fundpool.style.display   = 'block';
+    fpLoadPools();
   }
 };
 
@@ -2482,6 +2493,303 @@ window.openSettingsModal = function() {
   if (_origOpenSettingsModal) _origOpenSettingsModal();
   loadWatchlistSettings();
 };
+
+// ── 資金池（Fund Pool）────────────────────────────────────────────────────────
+
+let _fpActivePools = [];  // 快取池列表
+let _fpCurrentPoolId = null;  // 目前操作的池 ID
+
+async function fpLoadPools() {
+  const listEl = $('fpPoolList');
+  if (listEl) listEl.innerHTML = '<p class="placeholder-text">載入中...</p>';
+  try {
+    const data = await fetch('/api/pools').then(r => r.ok ? r.json() : { pools: [] }).catch(() => ({ pools: [] }));
+    _fpActivePools = data.pools || [];
+    fpRenderPools(_fpActivePools);
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<p class="placeholder-text">載入失敗：${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function fpRenderPools(pools) {
+  const listEl = $('fpPoolList');
+  if (!listEl) return;
+  if (!pools.length) {
+    listEl.innerHTML = '<p class="placeholder-text">尚無資金池，請先建立一個。</p>';
+    return;
+  }
+  listEl.innerHTML = pools.map(p => {
+    const retClass = (p.total_return_pct || 0) >= 0 ? 'arena-pos' : 'arena-neg';
+    const retStr = p.total_return_pct != null ? ((p.total_return_pct >= 0 ? '+' : '') + p.total_return_pct.toFixed(2) + '%') : '-';
+    const navStr = p.nav != null ? `$${Number(p.nav).toFixed(2)}` : '-';
+    const cashStr = p.cash != null ? `$${Number(p.cash).toFixed(2)}` : '-';
+    const mddStr = p.mdd != null ? p.mdd.toFixed(2) + '%' : '-';
+    const statusBadge = p.status === 'archived'
+      ? '<span class="arena-badge arena-badge-rejected">封存</span>'
+      : '<span class="arena-badge arena-badge-filled">活躍</span>';
+    return `<div class="fp-pool-card">
+      <div class="fp-pool-header">
+        <span class="fp-pool-name">${escapeHtml(p.name || p.pool_id)}</span>
+        ${statusBadge}
+        <span class="fp-pool-id" style="font-size:10px;color:var(--muted);">${escapeHtml(p.pool_id)}</span>
+      </div>
+      <div class="fp-pool-stats">
+        <span>NAV：<b>${navStr}</b></span>
+        <span>現金：${cashStr}</span>
+        <span class="${retClass}">總報酬：${retStr}</span>
+        <span>MDD：${mddStr}</span>
+        <span>待成交：${p.pending_orders || 0} 筆</span>
+      </div>
+      <div class="fp-pool-actions">
+        ${p.status !== 'archived' ? `<button onclick="fpSelectPool('${escapeHtml(p.pool_id)}','${escapeHtml(p.name || p.pool_id)}')">操作此池</button>` : ''}
+        <button onclick="fpShowDetail('${escapeHtml(p.pool_id)}','${escapeHtml(p.name || p.pool_id)}')">持倉/交易</button>
+        <button onclick="fpShowConsults('${escapeHtml(p.pool_id)}','${escapeHtml(p.name || p.pool_id)}')">會診紀錄</button>
+        ${p.status !== 'archived' ? `<button onclick="fpArchive('${escapeHtml(p.pool_id)}')" class="fp-archive-btn">封存</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.fpCreatePool = async function() {
+  const nameEl = $('fpNewName');
+  const cashEl = $('fpNewCash');
+  const statusEl = $('fpCreateStatus');
+  const name = (nameEl && nameEl.value.trim()) || '';
+  const cash = parseFloat((cashEl && cashEl.value) || '3000');
+  if (!name) { if (statusEl) statusEl.textContent = '請輸入資金池名稱'; return; }
+  if (statusEl) statusEl.textContent = '建立中...';
+  try {
+    const resp = await fetch('/api/pools', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, initial_cash: cash }),
+    }).then(r => r.json());
+    if (resp.error) { if (statusEl) statusEl.textContent = `失敗：${escapeHtml(resp.error)}`; return; }
+    if (statusEl) statusEl.textContent = `已建立：${escapeHtml(resp.pool_id)}`;
+    if (nameEl) nameEl.value = '';
+    await fpLoadPools();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `失敗：${escapeHtml(e.message)}`;
+  }
+};
+
+window.fpSelectPool = function(poolId, poolName) {
+  _fpCurrentPoolId = poolId;
+  const sec = $('fpOrderSection');
+  const nameEl = $('fpOrderPoolName');
+  if (sec) sec.style.display = 'block';
+  if (nameEl) nameEl.textContent = poolName;
+  sec && sec.scrollIntoView({ behavior: 'smooth' });
+};
+
+window.fpShowDetail = async function(poolId, poolName) {
+  _fpCurrentPoolId = poolId;
+  const sec = $('fpDetailSection');
+  const nameEl = $('fpDetailPoolName');
+  const posEl = $('fpPositions');
+  const trEl = $('fpTrades');
+  const navSec = $('fpNavSection');
+  const navNameEl = $('fpNavPoolName');
+  if (sec) sec.style.display = 'block';
+  if (nameEl) nameEl.textContent = poolName;
+  if (navSec) navSec.style.display = 'block';
+  if (navNameEl) navNameEl.textContent = poolName;
+  if (posEl) posEl.innerHTML = '<p class="placeholder-text">載入中...</p>';
+  if (trEl) trEl.innerHTML = '<p class="placeholder-text">載入中...</p>';
+  sec && sec.scrollIntoView({ behavior: 'smooth' });
+  try {
+    const data = await fetch(`/api/pools/${encodeURIComponent(poolId)}`).then(r => r.json());
+    // 持倉
+    const positions = data.positions || [];
+    if (!positions.length) {
+      if (posEl) posEl.innerHTML = '<p class="placeholder-text">空倉</p>';
+    } else {
+      if (posEl) posEl.innerHTML = `<table class="arena-table">
+        <thead><tr><th>標的</th><th>股數</th><th>均價</th><th>現價</th><th>未實現損益</th><th>NAV 佔比</th></tr></thead>
+        <tbody>${positions.map(p => `<tr>
+          <td class="arena-mono">${escapeHtml(p.symbol)}</td>
+          <td class="arena-mono">${p.qty != null ? Number(p.qty).toFixed(4) : '-'}</td>
+          <td class="arena-mono">${p.avg_cost != null ? '$' + Number(p.avg_cost).toFixed(2) : '-'}</td>
+          <td class="arena-mono">${p.last_close != null ? '$' + Number(p.last_close).toFixed(2) : '-'}</td>
+          <td class="arena-mono ${(p.unrealized_pnl || 0) >= 0 ? 'arena-pos' : 'arena-neg'}">${p.unrealized_pnl != null ? (p.unrealized_pnl >= 0 ? '+' : '') + '$' + Number(p.unrealized_pnl).toFixed(2) : '-'}</td>
+          <td class="arena-mono">${p.weight_pct != null ? Number(p.weight_pct).toFixed(1) + '%' : '-'}</td>
+        </tr>`).join('')}</tbody></table>`;
+    }
+    // 交易紀錄
+    const trades = data.trades || [];
+    if (!trades.length) {
+      if (trEl) trEl.innerHTML = '<p class="placeholder-text">無交易紀錄</p>';
+    } else {
+      const BADGE = {
+        filled:   '<span class="arena-badge arena-badge-filled">成交</span>',
+        pending:  '<span class="arena-badge arena-badge-pending">待成交</span>',
+        rejected: '<span class="arena-badge arena-badge-rejected">拒單</span>',
+      };
+      if (trEl) trEl.innerHTML = `<table class="arena-table arena-trades-table">
+        <thead><tr><th>決策日</th><th>成交日</th><th>標的</th><th>方向</th><th>金額/股</th><th>模式</th><th>狀態</th><th>理由</th></tr></thead>
+        <tbody>${trades.map(t => {
+          const badge = BADGE[t.status] || `<span class="arena-badge">${escapeHtml(t.status)}</span>`;
+          let amount = '-';
+          if (t.status === 'filled' && t.price != null) {
+            amount = `$${Number(t.price).toFixed(2)}${t.qty != null ? ' × ' + Number(t.qty).toFixed(4) : ''}`;
+          } else if (t.usd != null) { amount = `$${Number(t.usd).toFixed(0)}`; }
+          else if (t.qty != null) { amount = `${Number(t.qty).toFixed(4)}sh`; }
+          const fillModeLabel = t.fill_mode === 'latest_close'
+            ? '<span style="color:var(--orange,#e07b39);font-size:10px;">最新收盤 ⚠</span>'
+            : '<span style="font-size:10px;">T+1 開盤</span>';
+          const reasonText = t.rejected_reason
+            ? `${escapeHtml(t.reason || '')}<div class="arena-rej-note">拒單：${escapeHtml(t.rejected_reason)}</div>`
+            : escapeHtml(t.reason || '');
+          return `<tr>
+            <td class="arena-mono">${escapeHtml(t.decided_date || '-')}</td>
+            <td class="arena-mono">${escapeHtml(t.exec_date || '-')}</td>
+            <td class="arena-mono">${escapeHtml(t.symbol || '-')}</td>
+            <td class="arena-mono ${t.side === 'SELL' ? 'arena-neg' : 'arena-pos'}">${escapeHtml(t.side || '-')}</td>
+            <td class="arena-mono">${amount}</td>
+            <td>${fillModeLabel}</td>
+            <td>${badge}</td>
+            <td class="arena-reason">${reasonText || '<span class="arena-muted">—</span>'}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+    }
+    // NAV 曲線
+    const navEl = $('fpNavChart');
+    if (navEl && data.nav_series && data.nav_series.length) {
+      const series = {};
+      series[poolId] = data.nav_series;
+      renderArenaNavChart(navEl, series, {});
+    } else if (navEl) {
+      navEl.innerHTML = '<p class="placeholder-text">尚無 NAV 資料</p>';
+    }
+  } catch (e) {
+    if (posEl) posEl.innerHTML = `<p class="placeholder-text">載入失敗：${escapeHtml(e.message)}</p>`;
+  }
+};
+
+window.fpShowConsults = async function(poolId, poolName) {
+  const sec = $('fpConsultSection');
+  const nameEl = $('fpConsultPoolName');
+  const listEl = $('fpConsultList');
+  if (sec) sec.style.display = 'block';
+  if (nameEl) nameEl.textContent = poolName;
+  if (listEl) listEl.innerHTML = '<p class="placeholder-text">載入中...</p>';
+  sec && sec.scrollIntoView({ behavior: 'smooth' });
+  try {
+    const data = await fetch(`/api/pools/${encodeURIComponent(poolId)}/consults`).then(r => r.json());
+    const consults = data.consults || [];
+    if (!consults.length) {
+      if (listEl) listEl.innerHTML = '<p class="placeholder-text">尚無會診紀錄</p>';
+      return;
+    }
+    if (listEl) listEl.innerHTML = consults.map(c => {
+      const o7d = c.outcome_7d != null ? ((c.outcome_7d >= 0 ? '+' : '') + (c.outcome_7d * 100).toFixed(2) + '%') : '未知';
+      const opinions = (c.opinions || []).map(op => {
+        const sc = { support: 'arena-pos', oppose: 'arena-neg', neutral: '', absent: 'arena-muted' };
+        return `<div class="fp-opinion">
+          <span class="${sc[op.stance] || ''}">[${escapeHtml(op.agent_id)}] ${escapeHtml(op.stance)}</span>
+          ${op.confidence != null ? `(${(Number(op.confidence) * 100).toFixed(0)}%)` : ''}：${escapeHtml(op.opinion || '')}
+        </div>`;
+      }).join('');
+      return `<div class="arena-reflection-card">
+        <div class="arena-reflection-agent">${escapeHtml(c.as_of)} | ${escapeHtml(c.symbol || '—')} | 事後7日：${o7d}</div>
+        <div style="font-size:12.5px;margin-bottom:6px;color:var(--muted);">議題：${escapeHtml(c.question)}</div>
+        ${opinions}
+        ${c.summary ? `<div class="fp-consult-summary"><strong>主席綜合報告：</strong><p>${escapeHtml(c.summary)}</p></div>` : ''}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<p class="placeholder-text">載入失敗：${escapeHtml(e.message)}</p>`;
+  }
+};
+
+window.fpArchive = async function(poolId) {
+  if (!confirm(`確定要封存資金池 ${poolId}？封存後無法下新單，歷史資料保留。`)) return;
+  try {
+    const resp = await fetch(`/api/pools/${encodeURIComponent(poolId)}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).then(r => r.json());
+    if (resp.error) { alert(`封存失敗：${resp.error}`); return; }
+    await fpLoadPools();
+  } catch (e) { alert(`封存失敗：${e.message}`); }
+};
+
+window.fpPlaceOrder = async function() {
+  if (!_fpCurrentPoolId) { alert('請先選擇資金池'); return; }
+  const statusEl = $('fpOrderStatus');
+  const side = ($('fpOrderSide') && $('fpOrderSide').value) || 'BUY';
+  const symbol = ($('fpOrderSymbol') && $('fpOrderSymbol').value.trim().toUpperCase()) || '';
+  const reason = ($('fpOrderReason') && $('fpOrderReason').value.trim()) || '';
+  const fillMode = ($('fpOrderFillMode') && $('fpOrderFillMode').value) || 't1_open';
+  let usd = null, qty = null;
+  if (side === 'BUY') {
+    usd = parseFloat(($('fpOrderUsd') && $('fpOrderUsd').value) || '0');
+  } else {
+    qty = parseFloat(($('fpOrderQty') && $('fpOrderQty').value) || '0');
+  }
+  if (!symbol || !reason) { if (statusEl) statusEl.textContent = '標的與理由不能為空'; return; }
+  if (statusEl) statusEl.textContent = '送出中...';
+  try {
+    const body = { side, symbol, reason, fill_mode: fillMode };
+    if (usd !== null) body.usd = usd;
+    if (qty !== null) body.qty = qty;
+    const resp = await fetch(`/api/pools/${encodeURIComponent(_fpCurrentPoolId)}/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (resp.status === 'rejected') {
+      if (statusEl) statusEl.textContent = `拒單：${escapeHtml(resp.rejected_reason || '未知原因')}`;
+    } else if (resp.status === 'pending') {
+      if (statusEl) statusEl.textContent = `已接受（T+1 待成交，單號 ${resp.trade_id}）`;
+    } else if (resp.status === 'filled') {
+      if (statusEl) statusEl.textContent = `已成交，成交價 $${Number(resp.fill_price).toFixed(2)}（單號 ${resp.trade_id}）`;
+    } else if (resp.error) {
+      if (statusEl) statusEl.textContent = `失敗：${escapeHtml(resp.error)}`;
+    }
+    await fpLoadPools();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `失敗：${escapeHtml(e.message)}`;
+  }
+};
+
+window.fpAskAI = async function() {
+  if (!_fpCurrentPoolId) { alert('請先選擇資金池'); return; }
+  const statusEl = $('fpOrderStatus');
+  const symbol = ($('fpOrderSymbol') && $('fpOrderSymbol').value.trim().toUpperCase()) || '';
+  const side = ($('fpOrderSide') && $('fpOrderSide').value) || 'BUY';
+  if (!symbol) { if (statusEl) statusEl.textContent = '請先填寫標的'; return; }
+  const question = `使用者擬在 ${symbol} ${side === 'BUY' ? '買入' : '賣出'}，請評估此時的機會與風險。`;
+  if (statusEl) statusEl.textContent = '諮詢 AI 公司中（需數秒）...';
+  try {
+    const resp = await fetch(`/api/pools/${encodeURIComponent(_fpCurrentPoolId)}/consult`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, symbol }),
+    }).then(r => r.json());
+    if (resp.error) { if (statusEl) statusEl.textContent = `諮詢失敗：${escapeHtml(resp.error)}`; return; }
+    if (statusEl) statusEl.textContent = `諮詢已完成（會診 ID: ${resp.consult_id}），請查看會診紀錄。`;
+    fpShowConsults(_fpCurrentPoolId, '');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `諮詢失敗：${escapeHtml(e.message)}`;
+  }
+};
+
+// 切換 BUY/SELL 時更新金額/股數欄位
+(function() {
+  function onSideChange() {
+    const side = $('fpOrderSide') && $('fpOrderSide').value;
+    const usdLabel = $('fpOrderUsdLabel');
+    const qtyLabel = $('fpOrderQtyLabel');
+    if (usdLabel) usdLabel.style.display = side === 'SELL' ? 'none' : '';
+    if (qtyLabel) qtyLabel.style.display = side === 'SELL' ? '' : 'none';
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const sel = $('fpOrderSide');
+    if (sel) sel.addEventListener('change', onSideChange);
+  });
+})();
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
