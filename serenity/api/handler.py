@@ -34,6 +34,10 @@ from ..services.settings import (
     handle_test_key,
 )
 from ..services.bootstrap import get_status as bootstrap_get_status, handle_post_bootstrap
+from ..services.health import (
+    health_payload, get_stale_domains, refresh_status,
+    run_refresh, is_running,
+)
 
 
 class _BadRequest(Exception):
@@ -110,6 +114,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def route_api(self, path, query):
+        # 資料時效自檢 API
+        if path == "/api/health":
+            return health_payload()
+        if path == "/api/admin/refresh/status":
+            return refresh_status()
         # 階段三：Bootstrap API
         if path == "/api/admin/bootstrap/status":
             return bootstrap_get_status()
@@ -241,6 +250,27 @@ class Handler(SimpleHTTPRequestHandler):
         return {"error": "unknown api"}
 
     def route_post_api(self, path, payload):
+        # 資料時效自檢：POST /api/admin/refresh
+        if path == "/api/admin/refresh":
+            safe_stale, manual_stale = get_stale_domains()
+            if payload.get("dry_run"):
+                return {
+                    "dry_run": True,
+                    "domains": safe_stale,
+                    "manual": manual_stale,
+                }
+            # 非 dry_run：啟動背景補抓
+            if is_running():
+                raise _HTTPResponse({"error": "already running"}, 409)
+            # 也檢查 bootstrap 是否在跑（共用 running 狀態的隱性衝突）
+            from ..services.bootstrap import get_status as _bs_status
+            bs = _bs_status()
+            if bs.get("running"):
+                raise _HTTPResponse({"error": "already running"}, 409)
+            if not safe_stale:
+                return {"started": False, "domains": [], "message": "所有安全域均已最新"}
+            run_refresh(safe_stale, "ui-refresh")
+            return {"started": True, "domains": safe_stale}
         # 階段三：Bootstrap API
         if path == "/api/admin/bootstrap":
             resp, status = handle_post_bootstrap(payload)

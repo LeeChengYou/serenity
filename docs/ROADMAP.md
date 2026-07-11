@@ -25,7 +25,7 @@
 | **J-9 專家觀點** | `python scripts/crawler.py fetch-sources` | 每週一 07:40 | SEC EDGAR 13F 持倉變化（官方申報，45 天延遲）|
 | **J-10 Arena 日循環** | `python scripts/agent_arena.py daily` | 每日 08:00（J-8 之後） | 撮合昨日 pending 單 → 生成簡報 → 9 agents 決策 → 記錄 NAV |
 | **J-11 Arena 月度結算** | `python scripts/agent_arena.py monthly` | 每月 1 日 08:30 | 月度績效結算 + 反思 + 策略卡迭代 |
-| **J-12 每日健康檢查** | `python scripts/daily_check.py repair` | 每日 09:00（J-10 之後） | 十項資料域新鮮度檢查 + 自動修復斷點；失敗項依序重跑對應 ingest/arena 指令並輸出終檢報告 |
+| **J-12 每日健康檢查** | `python scripts/daily_check.py repair` | 每日 09:00（J-10 之後） | 十項資料域新鮮度檢查 + 自動修復斷點；失敗項依序重跑對應 ingest/arena 指令並輸出終檢報告。儀表板已內建每小時自檢與自動補抓（安全域）；J-12 排程仍負責 tweets/expert_views/arena 等需憑證的域 |
 
 ### Windows 工作排程器註冊指令（由使用者執行）
 

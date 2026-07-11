@@ -1531,6 +1531,8 @@ async function init() {
   loadRegime();
   // R3-5: load signal changes for Δ badges (once per page load)
   loadChanges();
+  // 資料時效徽章（once per page load）
+  loadHealthBadge();
 
   // Phase 2: load settings; auto-open modal if no API key configured
   try {
@@ -2189,6 +2191,156 @@ function _pollBootstrap() {
     }
   }, 3000);
 }
+
+// ── Health badge & panel ──────────────────────────────────────────────────────
+
+const HEALTH_DOMAIN_NAMES = {
+  prices:         '股票價格',
+  benchmarks:     '基準指數',
+  signal_history: '訊號快照',
+  news:           '新聞',
+  stocktwits:     'StockTwits',
+  tweets:         'X 貼文',
+  fundamentals:   '基本面',
+  estimates:      '分析師預估',
+  expert_views:   '專家觀點',
+  arena_nav:      '競技場 NAV',
+};
+const HEALTH_SAFE_DOMAINS = new Set([
+  'prices','benchmarks','signal_history','news','stocktwits','fundamentals','estimates'
+]);
+
+let _healthData = null;
+let _healthRefreshPollTimer = null;
+
+function _updateHealthBadge(data) {
+  const badge = $('health-badge');
+  if (!badge || !data) return;
+  const stale = (data.checks || []).filter(c => c.status !== 'ok');
+  if (stale.length === 0) {
+    badge.className = 'health-badge health-badge-ok';
+    badge.textContent = '🟢 資料時效';
+    badge.title = '所有資料域均已最新';
+  } else {
+    badge.className = 'health-badge health-badge-stale';
+    badge.textContent = `🟡 ${stale.length} 項過期`;
+    badge.title = `過期：${stale.map(c => c.name).join(', ')}`;
+  }
+}
+
+function _renderHealthPanel(data) {
+  const body = $('health-panel-body');
+  if (!body || !data) return;
+  const checks = data.checks || [];
+  body.innerHTML = checks.map(c => {
+    const name = HEALTH_DOMAIN_NAMES[c.name] || c.name;
+    const dotCls = c.status === 'ok' ? 'health-dot-ok' : c.status === 'missing' ? 'health-dot-missing' : 'health-dot-stale';
+    const timeStr = c.latest ? c.latest.slice(0, 19).replace('T', ' ') : '無資料';
+    const isManual = !HEALTH_SAFE_DOMAINS.has(c.name);
+    const manualNote = isManual ? '<span class="health-manual-note">需排程/開發者功能</span>' : '';
+    return `<div class="health-row">
+      <span class="health-row-name">${escapeHtml(name)}</span>
+      <span class="health-row-time">${escapeHtml(timeStr)} ${manualNote}</span>
+      <span class="health-dot ${dotCls}"></span>
+    </div>`;
+  }).join('');
+  const asOf = data.checked_at ? new Date(data.checked_at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '';
+  if (asOf) body.innerHTML += `<p style="font-size:10.5px; color:var(--muted); margin:6px 4px 0;">檢查時間：${escapeHtml(asOf)}</p>`;
+}
+
+async function loadHealthBadge() {
+  const badge = $('health-badge');
+  if (!badge) return;
+  try {
+    const resp = await fetch('/api/health');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    _healthData = data;
+    _updateHealthBadge(data);
+    if ($('health-panel').style.display !== 'none') _renderHealthPanel(data);
+  } catch (e) {
+    if (badge) {
+      badge.className = 'health-badge health-badge-loading';
+      badge.textContent = '⬜ 資料時效';
+    }
+  }
+}
+
+window.toggleHealthPanel = function() {
+  const panel = $('health-panel');
+  if (!panel) return;
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    if (_healthData) _renderHealthPanel(_healthData);
+    else loadHealthBadge();
+  } else {
+    panel.style.display = 'none';
+  }
+};
+
+window.triggerHealthRefresh = async function() {
+  const btn = $('health-refresh-btn');
+  const status = $('health-refresh-status');
+  if (btn) { btn.disabled = true; btn.textContent = '更新中...'; }
+  if (status) status.textContent = '';
+  try {
+    const resp = await fetch('/api/admin/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const d = await resp.json();
+    if (d.error) {
+      if (status) status.textContent = `⚠️ ${d.error}`;
+      if (btn) { btn.disabled = false; btn.textContent = '立即更新過期安全域'; }
+      return;
+    }
+    if (!d.started) {
+      if (status) status.textContent = '所有安全域均已最新';
+      if (btn) { btn.disabled = false; btn.textContent = '立即更新過期安全域'; }
+      return;
+    }
+    if (status) status.textContent = '背景更新中...';
+    _pollHealthRefreshStatus();
+  } catch (e) {
+    if (status) status.textContent = `錯誤：${e.message}`;
+    if (btn) { btn.disabled = false; btn.textContent = '立即更新過期安全域'; }
+  }
+};
+
+function _pollHealthRefreshStatus() {
+  if (_healthRefreshPollTimer) clearTimeout(_healthRefreshPollTimer);
+  _healthRefreshPollTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch('/api/admin/refresh/status');
+      const d = await resp.json();
+      const statusEl = $('health-refresh-status');
+      const steps = d.steps || [];
+      const running = steps.filter(s => s.status === 'running').map(s => s.name).join(', ');
+      if (statusEl) {
+        if (d.running) {
+          statusEl.textContent = running ? `更新中：${running}` : '更新中...';
+        } else {
+          const errors = steps.filter(s => s.status === 'error');
+          statusEl.textContent = errors.length ? `完成（${errors.length} 項失敗）` : '更新完成';
+        }
+      }
+      if (d.running) {
+        _pollHealthRefreshStatus();
+      } else {
+        const btn = $('health-refresh-btn');
+        if (btn) { btn.disabled = false; btn.textContent = '立即更新過期安全域'; }
+        // 重新載入健康狀態
+        await loadHealthBadge();
+      }
+    } catch (e) {
+      _pollHealthRefreshStatus(); // 暫時錯誤，繼續輪詢
+    }
+  }, 3000);
+}
+
+// 每 10 分鐘自動重查健康狀態
+setInterval(loadHealthBadge, 10 * 60 * 1000);
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 

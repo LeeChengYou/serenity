@@ -22,10 +22,26 @@
         <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <a href="/monitor.html" class="monitor-btn" style="text-decoration: none; font-size: 12px; font-weight: bold; background: var(--ink); color: var(--paper); padding: 6px 14px; border-radius: 999px; display: inline-block;">📊 系統與 AI 監控面板</a>
           <span id="regimeBadge" class="regime-badge regime-unknown" title="載入市場狀態中...">⚪ 市場狀態</span>
+          <button id="health-badge" class="health-badge health-badge-loading" onclick="toggleHealthPanel()" title="資料時效狀態">⬜ 資料時效</button>
           <button class="settings-btn" id="settingsOpenBtn" onclick="openSettingsModal()" title="設定 API 金鑰與模型">⚙</button>
         </div>
       </div>
     </section>
+
+    <!-- 資料時效面板 -->
+    <div id="health-panel" class="health-panel" style="display:none;">
+      <div class="health-panel-header">
+        <h3>資料時效自檢</h3>
+        <button class="health-panel-close" onclick="toggleHealthPanel()">✕</button>
+      </div>
+      <div id="health-panel-body">
+        <p style="color: var(--muted); font-size: 13px;">載入中...</p>
+      </div>
+      <div class="health-panel-footer">
+        <button id="health-refresh-btn" class="health-refresh-btn" onclick="triggerHealthRefresh()">立即更新過期安全域</button>
+        <span id="health-refresh-status" style="font-size: 12px; color: var(--muted);"></span>
+      </div>
+    </div>
 
     <!-- Global page navigation -->
     <nav class="global-page-nav reveal">
