@@ -50,6 +50,7 @@
       <button class="active" data-page="dashboard" onclick="switchGlobalPage('dashboard')">📊 儀表板</button>
       <button data-page="hitrate" onclick="switchGlobalPage('hitrate')">📈 命中率</button>
       <button data-page="arena" onclick="switchGlobalPage('arena')">🤖 經理人競技場</button>
+      <button data-page="fundpool" onclick="switchGlobalPage('fundpool')">💼 資金池</button>
     </nav>
 
     <section class="kpis reveal delay-1" id="kpis"></section>
@@ -107,6 +108,80 @@
         <div id="arenaReflections">
           <p class="placeholder-text">載入中...</p>
         </div>
+      </div>
+    </section>
+
+    <!-- 資金池分頁 — hidden by default -->
+    <section id="fundpoolView" class="fundpool-view" style="display:none;">
+      <div class="arena-disclaimer">
+        <strong>模擬資金・非投資建議</strong>
+        ── 資金池為 paper trading（虛擬資金 + 真實市場價格），不連接任何券商，不執行任何真實交易。
+        latest_close 成交模式為輕微 look-ahead，績效統計已標注。
+      </div>
+
+      <!-- 建池表單 -->
+      <div class="arena-section" id="fpCreateSection">
+        <h2 class="arena-section-title">➕ 建立新資金池</h2>
+        <div class="fp-create-form">
+          <label>名稱：<input type="text" id="fpNewName" placeholder="我的策略池" /></label>
+          <label>初始資金（USD）：<input type="number" id="fpNewCash" value="3000" min="100" step="100" /></label>
+          <button onclick="fpCreatePool()">建立</button>
+          <span id="fpCreateStatus" class="fp-status"></span>
+        </div>
+      </div>
+
+      <!-- 資金池列表 -->
+      <div class="arena-section">
+        <h2 class="arena-section-title">📋 我的資金池</h2>
+        <div id="fpPoolList"><p class="placeholder-text">載入中...</p></div>
+      </div>
+
+      <!-- 下單面板 -->
+      <div class="arena-section" id="fpOrderSection" style="display:none;">
+        <h2 class="arena-section-title">📤 下單：<span id="fpOrderPoolName"></span></h2>
+        <div class="fp-order-form">
+          <label>標的 Symbol：<input type="text" id="fpOrderSymbol" placeholder="NVDA" /></label>
+          <label>方向：
+            <select id="fpOrderSide">
+              <option value="BUY">BUY（以金額）</option>
+              <option value="SELL">SELL（以股���）</option>
+            </select>
+          </label>
+          <label id="fpOrderUsdLabel">金額（USD）：<input type="number" id="fpOrderUsd" value="300" min="1" step="10" /></label>
+          <label id="fpOrderQtyLabel" style="display:none;">股數：<input type="number" id="fpOrderQty" value="1" min="0.001" step="0.001" /></label>
+          <label>成交��式：
+            <select id="fpOrderFillMode">
+              <option value="t1_open">T+1 開盤成交（與 Agent 同規則）</option>
+              <option value="latest_close">最新收盤價成交（標注 look-ahead）</option>
+            </select>
+          </label>
+          <label>操作理由（必填）：<input type="text" id="fpOrderReason" placeholder="例：動能突破，追高進場" /></label>
+          <div class="fp-order-buttons">
+            <button onclick="fpPlaceOrder()">送��</button>
+            <button onclick="fpAskAI()" class="fp-consult-btn">先問 AI 公司</button>
+          </div>
+          <span id="fpOrderStatus" class="fp-status"></span>
+        </div>
+      </div>
+
+      <!-- 持倉與交易紀錄 -->
+      <div class="arena-section" id="fpDetailSection" style="display:none;">
+        <h2 class="arena-section-title">📊 持倉：<span id="fpDetailPoolName"></span></h2>
+        <div id="fpPositions"><p class="placeholder-text">載入��...</p></div>
+        <h3 class="arena-section-title" style="margin-top:16px;">📜 交易紀錄</h3>
+        <div id="fpTrades"><p class="placeholder-text">載入中...</p></div>
+      </div>
+
+      <!-- NAV 曲線 -->
+      <div class="arena-section" id="fpNavSection" style="display:none;">
+        <h2 class="arena-section-title">📈 NAV 曲線：<span id="fpNavPoolName"></span></h2>
+        <div id="fpNavChart"><p class="placeholder-text">載入中...</p></div>
+      </div>
+
+      <!-- 會診紀錄 -->
+      <div class="arena-section" id="fpConsultSection" style="display:none;">
+        <h2 class="arena-section-title">🤝 AI 公司會診紀錄：<span id="fpConsultPoolName"></span></h2>
+        <div id="fpConsultList"><p class="placeholder-text">載入中...</p></div>
       </div>
     </section>
 

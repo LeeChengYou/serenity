@@ -892,3 +892,92 @@ a { color: var(--blue); text-decoration: none; }
 }
 .health-refresh-btn:hover { opacity: 0.88; }
 .health-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── 資金池（Fund Pool）頁面 ─────────────────────────────────────────────────── */
+.fundpool-view {
+  padding: 16px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.fp-create-form {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  padding: 12px; background: rgba(255,255,255,0.35);
+  border: 1px solid var(--line); border-radius: 10px;
+}
+.fp-create-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.fp-create-form input[type="text"],
+.fp-create-form input[type="number"] {
+  font-size: 13px; padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.7);
+  color: var(--ink); outline: none; min-width: 140px;
+}
+.fp-create-form button {
+  font-size: 12px; font-weight: 700; padding: 8px 20px;
+  border: none; border-radius: 999px;
+  background: var(--green); color: white; cursor: pointer;
+  font-family: inherit; align-self: flex-end;
+}
+.fp-create-form button:hover { opacity: 0.88; }
+
+.fp-pool-card {
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(255,255,255,0.35); padding: 12px 16px;
+  margin-bottom: 10px;
+}
+.fp-pool-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+}
+.fp-pool-name { font-size: 15px; font-weight: 700; }
+.fp-pool-stats {
+  display: flex; flex-wrap: wrap; gap: 12px; font-size: 12.5px;
+  margin-bottom: 8px;
+}
+.fp-pool-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.fp-pool-actions button {
+  font-size: 11px; font-weight: 700; padding: 4px 12px;
+  border-radius: 999px; border: 1px solid var(--line);
+  background: transparent; cursor: pointer; font-family: inherit;
+  transition: background .15s;
+}
+.fp-pool-actions button:hover { background: rgba(0,0,0,0.06); }
+.fp-archive-btn { color: #b84000 !important; border-color: rgba(184,0,0,0.3) !important; }
+
+.fp-order-form {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  padding: 12px; background: rgba(255,255,255,0.35);
+  border: 1px solid var(--line); border-radius: 10px;
+}
+.fp-order-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.fp-order-form input[type="text"],
+.fp-order-form input[type="number"],
+.fp-order-form select {
+  font-size: 13px; padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.7);
+  color: var(--ink); outline: none; min-width: 140px;
+}
+.fp-order-buttons { display: flex; gap: 8px; align-items: center; }
+.fp-order-buttons button {
+  font-size: 12px; font-weight: 700; padding: 8px 20px;
+  border: none; border-radius: 999px; cursor: pointer;
+  font-family: inherit;
+}
+.fp-order-buttons button:first-child { background: var(--green); color: white; }
+.fp-consult-btn { background: #4a90d9 !important; color: white !important; }
+.fp-order-buttons button:hover { opacity: 0.88; }
+
+.fp-status {
+  font-size: 12px; color: var(--muted); padding: 4px 6px;
+  border-radius: 6px; background: rgba(0,0,0,0.04);
+}
+
+.fp-opinion {
+  font-size: 12px; padding: 4px 8px; margin: 2px 0;
+  border-left: 3px solid var(--line); background: rgba(255,255,255,0.3);
+}
+.fp-consult-summary {
+  margin-top: 8px; padding: 8px 12px;
+  background: rgba(74,144,217,0.08); border-radius: 8px;
+  font-size: 12.5px;
+}
+.fp-consult-summary p { margin: 4px 0 0; white-space: pre-wrap; }
