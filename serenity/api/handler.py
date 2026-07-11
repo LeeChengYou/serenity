@@ -3,13 +3,14 @@ serenity/api/handler.py
 Handler 類、send_json、route_api、route_post_api
 （原 server.py 469-844 行）
 """
+import hmac
 import json
 import os
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ..config import DB_PATH, ROOT, STATIC_DIR
+from ..config import DB_PATH, ROOT, STATIC_DIR, get_setting
 from ..db import db
 from ..keypool import _key_manager
 from ..services.market import (
@@ -52,15 +53,41 @@ class _HTTPResponse(Exception):
         self.status = status
 
 
+_LOCAL_IPS = {"127.0.0.1", "::1"}
+
+
 class Handler(SimpleHTTPRequestHandler):
     MAX_PAYLOAD = 2 * 1024 * 1024  # 2MB payload limit
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
+    def _check_auth(self) -> bool:
+        """
+        若 auth_token 已設定且請求來自非 localhost → 驗 Bearer token。
+        回傳 True 表示通過（或免驗），False 表示已送出 401 應立即 return。
+        localhost（127.0.0.1/::1）一律免驗。
+        """
+        token = get_setting("auth_token")
+        if not token:
+            return True  # 未設定 token，全員通行
+        client_ip = self.client_address[0]
+        if client_ip in _LOCAL_IPS:
+            return True  # 本機免驗
+        # 非 localhost：驗 Authorization: Bearer <token>
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[len("Bearer "):]
+            if hmac.compare_digest(provided, token):
+                return True
+        self.send_json({"error": "unauthorized"}, status=401)
+        return False
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
+            if not self._check_auth():
+                return
             try:
                 payload = self.route_api(parsed.path, parse_qs(parsed.query))
                 self.send_json(payload)
@@ -79,6 +106,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
+            if not self._check_auth():
+                return
             content_length = int(self.headers.get("Content-Length", 0))
             if content_length > self.MAX_PAYLOAD:
                 self.send_json({"error": f"Payload too large (max {self.MAX_PAYLOAD} bytes)"}, status=413)

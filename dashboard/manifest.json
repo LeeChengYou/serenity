@@ -1,0 +1,17 @@
+{
+  "name": "Serenity Signal",
+  "short_name": "Serenity",
+  "description": "股票訊號儀表板：X 貼文 / 新聞 / 基本面 → 訊號評分",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "theme_color": "#0f1117",
+  "background_color": "#0f1117",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

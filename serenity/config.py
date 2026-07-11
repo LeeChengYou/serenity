@@ -70,7 +70,7 @@ else:
         # 否則回落到 SERENITY_HOME（使用者可透過 --db 或 CLI 覆蓋）
         DB_PATH = SERENITY_HOME / "serenity.sqlite"
 
-# ── config.json 合法欄位（§2.1 schema 7 個）──────────────────────────────────
+# ── config.json 合法欄位（§2.1 schema 8 個）──────────────────────────────────
 _VALID_KEYS = {
     "gemini_api_key",
     "gemini_api_key_2",
@@ -79,6 +79,7 @@ _VALID_KEYS = {
     "gemini_model",
     "gemini_translate_model",
     "gemini_memory_model",
+    "auth_token",
 }
 
 _DEFAULTS = {
@@ -89,6 +90,7 @@ _DEFAULTS = {
     "gemini_api_key_2": "",
     "gemini_api_key_3": "",
     "gemini_api_key_4": "",
+    "auth_token": "",
 }
 
 # env var mapping（設定名稱 → 環境變數名稱）
@@ -100,6 +102,7 @@ _ENV_MAP = {
     "gemini_model":           "GEMINI_MODEL",
     "gemini_translate_model": "GEMINI_TRANSLATE_MODEL",
     "gemini_memory_model":    "GEMINI_MEMORY_MODEL",
+    "auth_token":             "SERENITY_AUTH_TOKEN",
 }
 
 

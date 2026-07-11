@@ -79,6 +79,44 @@ python scripts/crawler.py fetch-sources
 
 ---
 
+## 一之二、手機使用（PWA）
+
+Serenity Signal 支援 PWA（Progressive Web App），可在手機主畫面加入捷徑取得 app 體驗。
+
+### 啟動遠端存取
+
+```powershell
+# 以區網 IP 或 Tailscale IP 啟動（0.0.0.0 監聽所有介面）
+$env:SERENITY_AUTH_TOKEN = "your_secret_token"
+python scripts\server.py --host 0.0.0.0 --port 8787
+```
+
+**重要**：以非 127.0.0.1/localhost 啟動時，若未設定 token，server 會拒絕啟動（fail-secure）。
+
+### Token 設定方式
+
+1. **環境變數（推薦）**：設 `SERENITY_AUTH_TOKEN=<token>` 後啟動 server。
+2. **設定視窗**：開啟儀表板 → ⚙ 設定 → 「遠端存取 Token」欄位填入後儲存。
+
+### 手機端使用步驟
+
+1. 手機與電腦連接同一 Wi-Fi，或透過 [Tailscale](https://tailscale.com/) 建立私有網路。
+2. 在手機瀏覽器開啟 `http://<電腦IP>:8787`（或 Tailscale IP）。
+3. 初次連線時會彈出 token 輸入框（401 觸發），輸入 token 後自動存入 localStorage。
+4. iOS Safari：分享 → 「加入主畫面」；Android Chrome：選單 → 「加入主畫面」。
+
+### Service Worker 與 HTTPS 限制
+
+> **注意**：Service Worker（離線快取）需要 **HTTPS** 或 **localhost/127.0.0.1** 的 secure context。
+> 純 HTTP 區網 IP（如 `http://192.168.x.x:8787`）下 SW **不會**註冊，
+> 但頁面本身照常可用，僅無離線快取功能。
+> 若需完整 PWA 體驗（含離線），請透過 Tailscale（會話層加密）連線，
+> 或自行設定 TLS 憑證（例如 mkcert 本機 CA）。
+> 金融 API 資料（`/api/*`）一律走網路（不快取），即使在 HTTPS 環境下亦然，
+> 確保不以過時數據誤導投資判斷。
+
+---
+
 ## 二、工作計畫
 
 ### Phase A — 維運止血（本週）

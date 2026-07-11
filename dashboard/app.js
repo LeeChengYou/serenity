@@ -1,3 +1,47 @@
+// ── API fetch wrapper：自動附加 Authorization header（遠端存取 token）────────
+// 規則：對同源 /api/ 路徑自動加 Bearer token（若 localStorage.serenity_token 存在）。
+// 收到 401 時：prompt() 請使用者輸入 token → 存 localStorage → 重試一次。
+(function () {
+  var _nativeFetch = window.fetch.bind(window);
+  window.apiFetch = function (input, init) {
+    var url = (typeof input === 'string') ? input : (input.url || '');
+    var isSameOriginApi = (url.startsWith('/api/') || url.startsWith(location.origin + '/api/'));
+    if (!isSameOriginApi) {
+      return _nativeFetch(input, init);
+    }
+    var token = localStorage.getItem('serenity_token') || '';
+    var opts = Object.assign({}, init);
+    if (token) {
+      var headers = new Headers(opts.headers || {});
+      headers.set('Authorization', 'Bearer ' + token);
+      opts.headers = headers;
+    }
+    return _nativeFetch(input, opts).then(function (resp) {
+      if (resp.status === 401) {
+        var newToken = prompt('需要遠端存取 token，請輸入（由系統管理員設定）：');
+        if (newToken) {
+          localStorage.setItem('serenity_token', newToken.trim());
+          var retryOpts = Object.assign({}, init);
+          var retryHeaders = new Headers(retryOpts.headers || {});
+          retryHeaders.set('Authorization', 'Bearer ' + newToken.trim());
+          retryOpts.headers = retryHeaders;
+          return _nativeFetch(input, retryOpts).then(function (r2) {
+            if (r2.status === 401) {
+              alert('Token 驗證失敗，請確認後重試。');
+            }
+            return r2;
+          });
+        }
+      }
+      return resp;
+    });
+  };
+  // 覆寫 window.fetch，讓既有程式碼透明受益
+  window.fetch = function (input, init) {
+    return window.apiFetch(input, init);
+  };
+})();
+
 // ── Global state ─────────────────────────────────────────────────────────────
 let state = {
   symbols: [], active: null, filter: 'all',
@@ -1476,6 +1520,16 @@ window.saveSettings = async function() {
     const val = el.value.trim();
     if (val !== (origModels[field] || '')) {
       payload[field] = val;
+    }
+  }
+
+  // Collect auth_token（password 欄位有值才送；送空字串=清除）
+  const authTokenEl = $('settingsAuthToken');
+  if (authTokenEl) {
+    const authVal = authTokenEl.value;
+    // 只在欄位有值（或曾填入空字串清除意圖）時才送
+    if (authVal !== '') {
+      payload['auth_token'] = authVal.trim();
     }
   }
 

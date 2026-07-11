@@ -56,11 +56,15 @@ def build_settings_response() -> dict:
         "gemini_memory_model":    get_setting("gemini_memory_model"),
     }
 
+    # auth_token：只回是否啟用，不回 token 值
+    auth_token_val = get_setting("auth_token")
+
     return {
         "has_key": any_set,
         "keys": keys_info,
         "models": models,
         "config_path": str(SERENITY_HOME / "config.json"),
+        "auth": {"enabled": bool(auth_token_val)},
     }
 
 

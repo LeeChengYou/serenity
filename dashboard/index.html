@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0f1117" />
+  <link rel="manifest" href="/manifest.json" />
   <title>Serenity Signal Ledger</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -358,6 +360,17 @@
         </div>
       </div>
 
+      <!-- 遠端存取 Token -->
+      <div class="settings-section-title">遠端存取 Token</div>
+      <div class="settings-model-row">
+        <label for="settingsAuthToken">存取 Token（手機透過 Tailscale／區網連線時需要）</label>
+        <input type="password" id="settingsAuthToken" placeholder="留空=停用 token 驗證" autocomplete="new-password" />
+      </div>
+      <div style="font-size: 11px; color: var(--muted); margin: -4px 0 8px; padding: 0 2px;">
+        設定後以非本機位址連線時需在 HTTP 請求帶 <code>Authorization: Bearer &lt;token&gt;</code>。<br>
+        注意：Service Worker 需要 HTTPS 或 localhost；純 HTTP 區網 IP 頁面照常可用但 SW 不會啟動。
+      </div>
+
       <!-- Actions -->
       <div class="settings-action-row">
         <button class="settings-test-btn" id="settingsTestBtn" onclick="testSettingsKey()">測試連線（Slot 1）</button>
@@ -393,5 +406,13 @@
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <script src="/app.js?v=20260707-arena2"></script>
+  <script>
+    // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function(err) {
+        console.warn('Service Worker 註冊失敗（可能不在 secure context）：', err);
+      });
+    }
+  </script>
 </body>
 </html>
