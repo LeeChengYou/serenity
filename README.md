@@ -17,7 +17,7 @@
 | AI 投研對話 | 多模型 Gemini 對話、主題語意 RAG（自動關聯個股與價格）、長期記憶（自動提煉＋時間衰減）、中英翻譯 |
 | 資料面 | Yahoo 日線價格（增量同步）、Google News/CNBC/CNN 新聞、StockTwits 群眾情緒、基本面與分析師預估、SEC EDGAR 13F 專家觀點、X 貼文 cashtag 擷取（開發者功能） |
 | AI 經理人競技場 | 9 個不同策略的 Gemini agent 每日決策 paper trading：撮合、NAV 曲線、排行榜、交易日誌、月度反思與策略卡迭代 |
-| 維運 | `daily_check.py` 十項資料健康檢查＋斷點自動修復、`job_runs` 執行紀錄、`/monitor.html` AI 呼叫監控面板、Windows schtasks 每日排程（J-1～J-12） |
+| 維運 | 儀表板內建資料時效徽章（`/api/health` 十項自檢＋一鍵補抓＋背景每小時自動補抓安全域）、`daily_check.py` CLI 健康檢查＋斷點修復、`job_runs` 執行紀錄、`/monitor.html` AI 呼叫監控面板、Windows schtasks 每日排程（J-1～J-12） |
 | 散佈 | 應用內 ⚙ 設定視窗（使用者自填 Gemini API key，免 .env）、pywebview 桌面殼、PyInstaller 打包成 `Serenity.exe` |
 
 ## 系統需求
