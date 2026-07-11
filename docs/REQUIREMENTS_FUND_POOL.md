@@ -1,8 +1,10 @@
-# 模擬資金池(Fund Pools)需求規格 — 草案 v0.1
+# 模擬資金池(Fund Pools)需求規格 — 草案 v0.2
 
 > 狀態:草案,待使用者確認後派工。
-> 2026-07-12 由需求討論產出。已定案的三個方向:
-> ① 成交模式兩種都要(下單時可選)② 支援多個資金池 ③ 進競技場排行榜與 AI agent 同場比較。
+> 2026-07-12 由需求討論產出。已定案:
+> ① 成交模式兩種都要(下單時可選)② 支援多個資金池 ③ 進競技場排行榜與 AI agent 同場比較
+> ④ 交易成本比照 agent(只有滑價,無手續費,保持可比)⑤ 初始資金可自訂,UI 預設 $3,000
+> ⑥ 諮詢採「AI 公司會診」:多 agent 討論 → 綜合回報,且具記憶功能。
 
 ## 1. 目標
 
@@ -60,13 +62,36 @@
 - R5-2 human 池**不參與** agent 的淘汰/relaunch/monthly reflect 機制。
 - R5-3 使用者可查看當日各 agent briefing 作決策參考(已有資料,唯讀)。
 
-### R6 Agent 諮詢(下單前問 AI 經理人)
-- R6-1 下單面板可選 1 個 agent 諮詢:送出「擬下的單 + 該池目前持倉 + 該 agent
-  當日 briefing(as_of 當日以前資料,零 look-ahead)」,agent 回覆支持/反對 + 理由。
-- R6-2 諮詢紀錄落庫(pool_consults):問了誰、agent 說什麼、最終是否照做。
-  之後可統計「聽 agent vs 不聽」的勝率 —— 這是本功能的研究價值所在。
-- R6-3 走現有 backend 抽象(GeminiBackend / StubBackend);測試一律 StubBackend。
-  諮詢是 on-demand 低頻呼叫,注意 Gemini 429 時要優雅降級(顯示稍後再試,不阻擋下單)。
+### R6 AI 公司會診(下單前的多 agent 討論 + 綜合回報 + 記憶)
+
+概念:把 9 個 AI 經理人當成一間「AI 公司」。使用者提出議題,多個 agent 各自表態,
+再由一個「主席(synthesizer)」角色彙整成綜合報告。全程落庫、可回溯、有記憶。
+
+- R6-1 **議題**:兩種入口 —— (a) 下單面板「先問公司」:議題 = 擬下的單 + 該池持倉摘要;
+  (b) 獨立提問:開放式問題(如「NVDA 現在該加碼嗎?」),不綁定下單。
+- R6-2 **與會者**:預設 = 該 symbol 所屬領域(semis / robotics / ai_cloud)的 3 個 agent;
+  使用者可手動勾選,上限 5 人(控制 Gemini 配額)。
+- R6-3 **兩階段流程**(LLM 呼叫數 = N+1,預設 4 次):
+  1. 意見輪:每位與會 agent 各 1 次呼叫。輸入 = 議題 + 該 agent 當日 briefing
+     (as_of 以前資料,零 look-ahead)+ 該 agent 自己的 `agent_memory`(重用現有表)
+     + 本池同 symbol 的歷史會診摘要與事後結果(見 R6-5)。
+     輸出 = 立場(支持/反對/中立)+ 信心(0-1)+ 理由。
+  2. 綜合輪:主席 1 次呼叫。輸入 = 全部意見。輸出綜合報告:共識與分歧點、
+     多空論點對照、建議行動、主要風險。主席是獨立 prompt 角色,不屬於 9 個 agent。
+  - 「agent 互看意見的第二輪交叉討論」列為 V2,V1 不做(配額考量)。
+- R6-4 **落庫**:`pool_consults`(議題、綜合報告、symbol)+ `pool_consult_opinions`
+  (每位 agent 的立場/信心/理由)。若之後真的下單,回填 trade_id 與 followed(是否照做)。
+- R6-5 **記憶功能**:記憶 = 歷史會診紀錄 + 事後結果回填,不另建記憶表。
+  - daily 流程對已滿 7 個交易日的會診自動回填 `outcome_7d`(該 symbol 其後 7 交易日
+    報酬,用 `prices` 真實價,缺價則 NULL —— 零捏造)。
+  - 下次會診同一 symbol 時,把最近 K 次(預設 3)該 symbol 會診的「綜合報告摘要 +
+    當時建議 + outcome_7d + 使用者是否照做」注入意見輪與綜合輪 prompt,
+    讓 AI 公司「記得上次說過什麼、對了沒」。
+  - agent 個人層記憶直接重用現有 `agent_memory`,不重複造輪子。
+- R6-6 **統計**:「聽公司建議 vs 不聽」的事後表現對照 —— 本功能的研究價值所在。
+- R6-7 **降級**:走現有 backend 抽象(GeminiBackend / StubBackend);測試一律 StubBackend。
+  某 agent 429/失敗 → 標注「缺席」,只要 ≥1 份意見即可出綜合報告;
+  全數失敗 → 提示稍後再試。會診永遠不阻擋下單(諮詢是輔助,不是關卡)。
 
 ## 4. 鐵律對照(全部適用)
 
@@ -86,16 +111,28 @@ create table pools (
     created_at   text not null
 );
 
--- 諮詢紀錄
+-- 會診主檔(一次 AI 公司會診一列)
 create table pool_consults (
     id          integer primary key autoincrement,
     pool_id     text not null,
     trade_id    integer,             -- 之後若真的下單,回填 agent_trades.id
-    agent_id    text not null,       -- 被諮詢的 agent
+    symbol      text,                -- 議題主要標的(記憶檢索用;開放式提問可 NULL)
     as_of       text not null,
-    question    text not null,       -- 擬下的單 + 持倉摘要
-    answer      text not null,       -- agent 回覆
-    followed    integer              -- null=未下單 / 1=照做 / 0=沒照做
+    question    text not null,       -- 議題:擬下的單 + 持倉摘要,或開放式問題
+    summary     text,                -- 主席綜合報告(全部意見失敗時 NULL)
+    followed    integer,             -- null=未下單 / 1=照建議做 / 0=沒照做
+    outcome_7d  real,                -- 事後 7 交易日報酬(daily 回填;缺價 NULL)
+    created_at  text not null
+);
+
+-- 會診個別意見(每位與會 agent 一列)
+create table pool_consult_opinions (
+    id          integer primary key autoincrement,
+    consult_id  integer not null,
+    agent_id    text not null,
+    stance      text not null,       -- support | oppose | neutral | absent(429/失敗)
+    confidence  real,
+    opinion     text not null
 );
 ```
 
@@ -107,7 +144,7 @@ create table pool_consults (
 - `POST /api/pools` 建池;`GET /api/pools` 列表(含摘要指標)
 - `POST /api/pools/{id}/orders` 下單(含 fill_mode、reason);`GET .../trades`、`.../positions`、`.../nav`
 - `POST /api/pools/{id}/archive`
-- `POST /api/pools/{id}/consult` agent 諮詢
+- `POST /api/pools/{id}/consult` 發起 AI 公司會診(與會者、議題);`GET /api/pools/{id}/consults` 歷史會診
 - 排行榜端點加入 human 池(標記 kind='human')
 
 ## 7. 設計決策:human 池 = 特殊 agent
@@ -127,15 +164,20 @@ create table pool_consults (
 4. reason 空白 → API 拒收。
 5. 排行榜含 human 池且標記正確;monthly 淘汰邏輯不碰 human 池。
 6. 封存池拒絕新單,歷史查詢正常。
-7. 諮詢(StubBackend):落庫、trade_id 回填、429 降級不阻擋下單。
-8. 既有競技場測試(scratch/test_arena_final.py)全數仍通過 —— 不破壞現有功能。
+7. 會診(StubBackend):意見輪 N 份意見 + 主席綜合報告皆落庫;trade_id / followed 回填正確。
+8. 會診記憶:同 symbol 第二次會診時,prompt 內含上次會診摘要與 outcome_7d(以 Stub 檢查輸入)。
+9. outcome_7d 回填:跑 daily 滿 7 交易日後自動填入,數值 = prices 真實價計算;缺價 NULL。
+10. 降級:模擬 1 個 agent 失敗 → stance='absent' 且綜合報告仍產出;全失敗 → summary NULL、API 回明確錯誤,且不影響下單流程。
+11. 既有競技場測試(scratch/test_arena_final.py)全數仍通過 —— 不破壞現有功能。
 
-## 9. 未定事項(實作前確認)
+## 9. 已定案事項(原未定事項)
 
-- 手續費:目前 agent 只有滑價無手續費;human 池是否比照?(建議比照,保持可比)
-- 預設初始資金建議值(agent 是 $3,000;human 池自訂,UI 預設值待定)
-- 諮詢一次問多個 agent?(建議 V1 先單一 agent,降低 Gemini 配額壓力)
+- 交易成本:比照 agent —— 只有滑價(SLIPPAGE_BPS)、無手續費,雙方規則一致即可比。
+- 初始資金:使用者可自訂,UI 預設 $3,000(與 agent 相同,便於同榜對照)。
+- 諮詢形式:AI 公司會診(多 agent 意見輪 + 主席綜合輪),預設同領域 3 人、上限 5 人;
+  第二輪交叉討論列 V2。
 
 ---
 Changelog:
+- 2026-07-12 v0.2 定案手續費/初始資金;諮詢升級為 AI 公司會診(多 agent + 主席綜合 + 記憶/outcome 回填)。
 - 2026-07-12 v0.1 初稿(需求討論 session)。
