@@ -177,7 +177,102 @@ create table pool_consult_opinions (
 - 諮詢形式:AI 公司會診(多 agent 意見輪 + 主席綜合輪),預設同領域 3 人、上限 5 人;
   第二輪交叉討論列 V2。
 
+## 10. 介面契約(由監督者定死;驗收測試與實作都以此為準,矛盾時以驗收測試為準)
+
+### 10.1 `scripts/fund_pool.py`(新檔,引擎層,風格比照 agent_arena.py)
+
+```
+constants:
+  DEFAULT_INITIAL_CASH = 3000.0        # UI 預設,建池可自訂
+  CONSULT_MAX_PARTICIPANTS = 5
+  CONSULT_MEMORY_K = 3                 # 記憶注入:同 symbol 最近 K 次會診
+  OUTCOME_TRADING_DAYS = 7
+
+migrate(con) -> None
+  冪等。建 pools / pool_consults / pool_consult_opinions(schema 見 §5);
+  agent_trades 加欄 fill_mode text not null default 't1_open'(已存在則略過)。
+
+create_pool(con, name, initial_cash, created_at=None) -> str   # 回傳 pool_id
+  pool_id = 'pool-<slug(name)>'。seed:agents 列(id=pool_id, domain='human',
+  style_seed='human', backend='human', status='active', hwm=initial_cash)、
+  agent_state(cash=nav=initial_cash)、pools 列。同名池已存在 → raise ValueError。
+
+place_order(con, pool_id, side, symbol, *, usd=None, qty=None,
+            reason, fill_mode='t1_open', as_of) -> dict
+  回傳 {"status": "pending"|"filled"|"rejected", "trade_id": int|None,
+        "rejected_reason": str|None, "fill_price": float|None}
+  慣例:BUY 用 usd、SELL 用 qty(與 agent 相同)。
+  驗證(依序,先中先拒):reason 為空、池不存在或 archived、symbol 不在 prices、
+  BUY usd > 現金、SELL qty > 持有。
+  t1_open:insert agent_trades(status='pending', decided_date=as_of,
+    fill_mode='t1_open'),之後由 run_daily 的 _fill_pending_orders 以
+    當日開盤 ± SLIPPAGE_BPS 撮合(現有引擎,不改)。
+  latest_close:取 prices 中該 symbol date <= as_of 的最新 close,
+    fill_px = close × (1±slip),立即更新 positions/cash,
+    status='filled', exec_date=該價格的 date, fill_mode='latest_close'。
+
+archive_pool(con, pool_id) -> None      # pools.status='archived' 且 agents.status='retired'
+list_pools(con) -> list[dict]
+
+class ConsultBackend(ABC):
+    opine(agent_id, prompt) -> dict     # {"stance":"support|oppose|neutral","confidence":float,"opinion":str}
+    synthesize(prompt) -> str
+class StubConsultBackend(ConsultBackend):
+    __init__(opine_map=None, synthesize_text="stub summary")
+    # 必須記錄收到的輸入供測試檢查記憶注入:
+    # .opine_prompts: list[tuple[agent_id, prompt]]、.synthesize_prompts: list[str]
+class GeminiConsultBackend(ConsultBackend)   # 用 serenity.gemini.call_gemini
+
+run_consult(con, pool_id, question, symbol, participants, as_of, backend) -> int  # consult_id
+  participants:1..5 個 agent_id。意見輪:逐一 backend.opine(),prompt 必含
+  question + 該 agent 當日 briefing(agent_arena.build_briefing,零 look-ahead)
+  + 該 agent 的 agent_memory + 該池同 symbol 最近 CONSULT_MEMORY_K 次會診
+  (summary + outcome_7d + followed)。opine 例外/429 → 該 agent stance='absent'。
+  綜合輪:≥1 份非 absent 意見 → backend.synthesize() 存 summary;全 absent → summary NULL。
+
+backfill_outcomes(con, as_of) -> None
+  冪等。對 outcome_7d IS NULL 且 symbol 非 NULL 的會診:若 prices 中該 symbol
+  在會診日之後已有 ≥7 個交易日,outcome_7d = 第 7 交易日 close / 會診日(<=as_of)
+  最近 close - 1;缺價維持 NULL(零捏造)。
+
+CLI:python scripts/fund_pool.py migrate | daily(daily = backfill_outcomes(最新交易日))
+```
+
+### 10.2 `scripts/agent_arena.py` 修改(最小侵入)
+
+- `run_daily`:agents 查詢加選 backend 欄;`backend='human'` 的列**跳過**
+  簡報/decide/下單/memory(步驟 3–7),但仍執行冪等檢查與 `_record_nav`。
+  (`_fill_pending_orders` 為全域撮合,human 的 t1_open 單自動涵蓋,不用改。)
+- `run_monthly`:排名/淘汰/relaunch/reflect 全部排除 `backend='human'`。
+- 其餘不動;`migrate` 不動(新表由 fund_pool.migrate 負責)。
+
+### 10.3 `serenity/services/pool_views.py`(新檔)+ arena_views 修改
+
+- `pool_list_payload(con)` → `{"pools":[{pool_id,name,initial_cash,status,nav,cash,
+  total_return_pct,mdd,pending_orders,created_at}]}`
+- `pool_detail_payload(con, pool_id)` → 持倉(qty/avg_cost/last_close/unrealized_pnl/
+  weight_pct)、nav 序列、trades(含 fill_mode/reason/status)
+- `pool_consults_payload(con, pool_id)` → 會診列表(含 opinions 與 summary)
+- `arena_leaderboard_payload`:列加 `kind` 欄('ai'|'human'),human 池列入;
+  既有欄位與既有測試不得壞。
+
+### 10.4 API 路由(serenity/api/handler.py)
+
+- `GET  /api/pools`、`POST /api/pools`(body: name, initial_cash)
+- `GET  /api/pools/{id}`(detail)、`POST /api/pools/{id}/archive`
+- `POST /api/pools/{id}/orders`(body: side, symbol, usd|qty, reason, fill_mode,
+  as_of 可省 = prices 最新日)→ place_order 結果原樣回傳
+- `POST /api/pools/{id}/consult`(body: question, symbol, participants 可省 =
+  該 symbol 領域 3 agent)、`GET /api/pools/{id}/consults`
+
+### 10.5 Dashboard(dashboard/ 新「資金池」分頁,zh-TW)
+
+池列表卡 + 建池表單、下單面板(symbol 搜尋、方向、金額/股數、成交模式、reason 必填、
+「先問 AI 公司」)、持倉表、交易紀錄表、NAV 曲線(可疊加 agent)、會診紀錄
+(個別意見 + 綜合報告 + 事後 outcome)。
+
 ---
 Changelog:
+- 2026-07-12 v0.3 補 §10 介面契約(派工用,監督者定稿)。
 - 2026-07-12 v0.2 定案手續費/初始資金;諮詢升級為 AI 公司會診(多 agent + 主席綜合 + 記憶/outcome 回填)。
 - 2026-07-12 v0.1 初稿(需求討論 session)。
