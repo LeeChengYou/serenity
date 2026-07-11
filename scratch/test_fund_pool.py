@@ -886,6 +886,95 @@ def main():
                   len(human_rows) > 0,
                   f"human_rows count={len(human_rows)}")
 
+    # ── P14: 審查退回必修案例（M1/M2/M3/W1，2026-07-12 fresh-context 審查）──
+    print("\n[P14] 輸入防護：initial_cash<=0、slug 碰撞、負數/零下單、會診人數上限")
+
+    # M3: create_pool initial_cash <= 0 → ValueError
+    for bad_cash in (0.0, -500.0):
+        try:
+            fp.create_pool(con, f"Bad Cash {bad_cash}", bad_cash, created_at="2025-06-01")
+            check(f"create_pool initial_cash={bad_cash} → ValueError", False, "未 raise")
+        except ValueError:
+            check(f"create_pool initial_cash={bad_cash} → ValueError", True)
+        except Exception as exc:
+            check(f"create_pool initial_cash={bad_cash} → ValueError", False,
+                  f"raise 了非 ValueError: {exc!r}")
+
+    # M2: slug 碰撞（不同 display_name、相同 slug）→ 第二次必須 raise，第一池不被動
+    pool_col = fp.create_pool(con, "Collide Pool", 3000.0, created_at="2025-06-01")
+    col_cash_before = con.execute(
+        "SELECT cash FROM agent_state WHERE agent_id=? ORDER BY month DESC LIMIT 1",
+        (pool_col,)).fetchone()["cash"]
+    try:
+        pid2 = fp.create_pool(con, "collide  pool", 9999.0, created_at="2025-06-01")
+        check("slug 碰撞 create_pool → ValueError", False, f"未 raise，回傳 {pid2!r}")
+    except ValueError:
+        check("slug 碰撞 create_pool → ValueError", True)
+    except Exception as exc:
+        check("slug 碰撞 create_pool → ValueError", False, f"raise 了非 ValueError: {exc!r}")
+    col_cash_after = con.execute(
+        "SELECT cash FROM agent_state WHERE agent_id=? ORDER BY month DESC LIMIT 1",
+        (pool_col,)).fetchone()["cash"]
+    check("slug 碰撞後原池 cash 未被動",
+          approx(col_cash_after, col_cash_before, rel=1e-9),
+          f"before={col_cash_before}, after={col_cash_after}")
+    col_pool_rows = con.execute(
+        "SELECT COUNT(*) FROM pools WHERE agent_id=?", (pool_col,)).fetchone()[0]
+    check("slug 碰撞後 pools 僅 1 列", col_pool_rows == 1, f"got {col_pool_rows}")
+
+    # M1: BUY usd<=0 / SELL qty<=0 → rejected（兩種 fill_mode 都擋），資金與持倉不得變動
+    pool_guard = fp.create_pool(con, "Guard Pool", 3000.0, created_at="2025-06-01")
+    AS_OF_G = "2025-06-05"
+    for mode in ("t1_open", "latest_close"):
+        for bad_usd in (0.0, -300.0):
+            try:
+                rg = fp.place_order(con, pool_guard, "BUY", "NVDA",
+                                    usd=bad_usd, reason="guard test",
+                                    fill_mode=mode, as_of=AS_OF_G)
+            except Exception as exc:
+                rg = {"status": "error", "rejected_reason": repr(exc)}
+            check(f"BUY usd={bad_usd} ({mode}) → rejected",
+                  rg.get("status") == "rejected", f"got {rg.get('status')!r}")
+    for bad_qty in (0.0, -1.0):
+        try:
+            rg = fp.place_order(con, pool_guard, "SELL", "NVDA",
+                                qty=bad_qty, reason="guard test",
+                                fill_mode="latest_close", as_of=AS_OF_G)
+        except Exception as exc:
+            rg = {"status": "error", "rejected_reason": repr(exc)}
+        check(f"SELL qty={bad_qty} → rejected",
+              rg.get("status") == "rejected", f"got {rg.get('status')!r}")
+    g_cash = con.execute(
+        "SELECT cash FROM agent_state WHERE agent_id=? ORDER BY month DESC LIMIT 1",
+        (pool_guard,)).fetchone()["cash"]
+    check("負數/零下單後現金仍 3000（沒有憑空生現金）",
+          approx(g_cash, 3000.0, rel=1e-9), f"got {g_cash}")
+    g_pos = con.execute(
+        "SELECT COUNT(*) FROM agent_positions WHERE agent_id=?", (pool_guard,)).fetchone()[0]
+    check("負數/零下單後無持倉（沒有負持倉/放空）", g_pos == 0, f"got {g_pos}")
+    g_pending = con.execute(
+        "SELECT COUNT(*) FROM agent_trades WHERE agent_id=? AND status='pending'",
+        (pool_guard,)).fetchone()[0]
+    check("負數/零下單後無 pending 單", g_pending == 0, f"got {g_pending}")
+
+    # W1: run_consult participants 數量 0 或 >CONSULT_MAX_PARTICIPANTS → ValueError，且不呼叫 opine
+    ai_agents = [r["id"] for r in con.execute(
+        "SELECT id FROM agents WHERE backend != 'human' ORDER BY id").fetchall()]
+    stub_guard = fp.StubConsultBackend(synthesize_text="guard summary")
+    for plist, label in (([], "0 人"), (ai_agents[:7], "7 人")):
+        try:
+            fp.run_consult(con, pool_guard, "guard question", "NVDA",
+                           plist, AS_OF_G, stub_guard)
+            check(f"run_consult participants {label} → ValueError", False, "未 raise")
+        except ValueError:
+            check(f"run_consult participants {label} → ValueError", True)
+        except Exception as exc:
+            check(f"run_consult participants {label} → ValueError", False,
+                  f"raise 了非 ValueError: {exc!r}")
+    check("超限會診未呼叫任何 opine（省配額）",
+          len(stub_guard.opine_prompts) == 0,
+          f"opine called {len(stub_guard.opine_prompts)} 次")
+
     # ── 結尾 ─────────────────────────────────────────────────────────────
     con.close()
     return finish()
