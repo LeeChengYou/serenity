@@ -54,18 +54,58 @@ Gemini(聊天視窗可選模型)+ `skills/serenity-skill/SKILL.md` 研究準則 
 
 ---
 
-## (b) 本地 LLM backend(Ollama / OpenAI-compatible)【路線圖】
+## (b) 本地 LLM backend(Ollama / OpenAI-compatible)【b-1 詳細規格,2026-07-12 定稿】
 
-- 目標:量大低風險呼叫(批次情緒標注、翻譯、arena agent 日常決策、會診意見輪)
-  可切到本地模型,擺脫 Gemini 429;互動聊天預設留雲端。
-- 建議模型:Qwen2.5-14B-Instruct(中文金融理解佳;Q4 約 10–12GB VRAM,
-  8B 版 6–8GB 為低配替代)。
-- 架構:新增 `serenity/llm_local.py` 提供 OpenAI-compatible `/v1/chat/completions`
-  呼叫;`AgentBackend`/`ConsultBackend` 各加 Ollama 實作;設定頁加
-  「backend 指派」(每種任務類別選 gemini / ollama)。
-- 驗收要點:Ollama 未啟動時優雅降級(fallback 到 gemini 或明確報錯不 500);
-  Stub 測試涵蓋解析畸形輸出。
-- 前置確認:使用者 GPU VRAM(決定 8B/14B/32B)。
+硬體已確認:RTX 4070 Ti SUPER(16GB VRAM)。
+
+### b-R1 引擎與模型
+- 引擎:**Ollama**(底層 llama.cpp;拿到 prefix cache、keep_alive 常駐等能力)。
+  安裝與模型下載由**使用者本人執行**(`ollama pull qwen3:14b`)。
+- 預設模型:`qwen3:14b`(Q4 約 9–10GB,16GB 舒適;中文金融理解優於 Llama)。
+  模型名可在設定改;Llama-3.1-8B 等留給純英文批次任務自選。
+- 呼叫走 **OpenAI-compatible** `POST {base}/v1/chat/completions`
+  (未來可無痛換 LM Studio / vLLM);base 預設 `http://127.0.0.1:11434`。
+
+### b-R2 `serenity/llm_local.py`(新)
+```
+call_local_llm(messages, system=None, temperature=0.3,
+               model=None, base_url=None, timeout=120) -> str
+  - model/base_url 缺省時讀 settings(local_llm_model / local_llm_base_url)
+  - keep_alive 參數設 -1(模型常駐 VRAM)
+  - 連線失敗/逾時 → raise LocalLLMUnavailable(zh-TW 訊息:
+    「本地模型未啟動:請先啟動 Ollama(ollama serve)並確認已 pull {model}」)
+  - 回應非預期結構 → raise(顯式,不靜默補值)
+is_local_llm_up(base_url=None) -> bool   # GET {base}/api/tags,1 秒逾時
+```
+- **Prefix cache 友善**:呼叫端組 prompt 時,不變內容(skill 準則)排最前,
+  變動內容(市場快照、個股檢索)排後——寫進 chat 整合的實作註記。
+
+### b-R3 聊天室整合
+- 聊天視窗模型下拉加「本地 Ollama(qwen3:14b)」選項(value=`local`)。
+- `handle_chat_api`:model==`local` → 走 `call_local_llm`(不需 Gemini key);
+  LocalLLMUnavailable → 回友善錯誤訊息(200 + error 欄位,不 500)。
+- 設定頁(既有 settings 機制)加 `local_llm_base_url`、`local_llm_model`。
+
+### b-R4 會診整合
+- `scripts/fund_pool.py` 加 `LocalConsultBackend(ConsultBackend)`:
+  opine/synthesize 走 call_local_llm,JSON 解析失敗顯式 raise(由 run_consult
+  標 absent,與 Gemini 路徑同語義)。
+- `/api/pools/{id}/consult` body 加選填 `backend`(`gemini` 預設|`local`)。
+
+### b-R5 範圍外(b-2 再做)
+- arena agent 日常決策切本地、批次情緒/翻譯切本地、每任務類別的 backend 指派表。
+
+### b-驗收(scratch/test_local_llm.py;用本機假 HTTP server 模擬 Ollama,不需真裝)
+1. call_local_llm 對假 server 正常解析回覆文字。
+2. 假 server 回畸形 JSON / 缺欄位 → 顯式 raise,不回假值。
+3. 連不上(未啟動)→ LocalLLMUnavailable,訊息含「本地模型未啟動」。
+4. is_local_llm_up:有假 server True / 無 False。
+5. handle_chat_api(model='local', 假 server)成功回覆;假 server 關閉 →
+   回傳含 error 的 dict 而非例外。
+6. LocalConsultBackend:StubHTTP 下 run_consult 全流程落庫;既有
+   test_fund_pool.py 147/147、test_arena_final.py 70/70 不受影響。
+7. py_compile 全部改動檔;真機冒煙(使用者裝好 Ollama 後):聊天選「本地」
+   問一題,回覆引用快照數據。
 
 ## (c) 台股支援 Phase 1【路線圖】
 
