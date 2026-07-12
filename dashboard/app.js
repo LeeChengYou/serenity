@@ -1058,6 +1058,7 @@ window.switchGlobalPage = function(page) {
   const hitrate   = $('hitrateView');
   const arena     = $('arenaView');
   const fundpool  = $('fundpoolView');
+  const newspage  = $('newspageView');
 
   document.querySelectorAll('.global-page-nav button').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.page === page));
@@ -1068,12 +1069,14 @@ window.switchGlobalPage = function(page) {
     if (hitrate)   hitrate.style.display    = 'none';
     if (arena)     arena.style.display      = 'none';
     if (fundpool)  fundpool.style.display   = 'none';
+    if (newspage)  newspage.style.display   = 'none';
   } else if (page === 'hitrate') {
     if (kpis)      kpis.style.display      = 'none';
     if (workbench) workbench.style.display  = 'none';
     if (hitrate)   hitrate.style.display    = 'block';
     if (arena)     arena.style.display      = 'none';
     if (fundpool)  fundpool.style.display   = 'none';
+    if (newspage)  newspage.style.display   = 'none';
     loadHitRate();
   } else if (page === 'arena') {
     if (kpis)      kpis.style.display      = 'none';
@@ -1081,6 +1084,7 @@ window.switchGlobalPage = function(page) {
     if (hitrate)   hitrate.style.display    = 'none';
     if (arena)     arena.style.display      = 'block';
     if (fundpool)  fundpool.style.display   = 'none';
+    if (newspage)  newspage.style.display   = 'none';
     loadArena();
   } else if (page === 'fundpool') {
     if (kpis)      kpis.style.display      = 'none';
@@ -1088,7 +1092,16 @@ window.switchGlobalPage = function(page) {
     if (hitrate)   hitrate.style.display    = 'none';
     if (arena)     arena.style.display      = 'none';
     if (fundpool)  fundpool.style.display   = 'block';
+    if (newspage)  newspage.style.display   = 'none';
     fpLoadPools();
+  } else if (page === 'newspage') {
+    if (kpis)      kpis.style.display      = 'none';
+    if (workbench) workbench.style.display  = 'none';
+    if (hitrate)   hitrate.style.display    = 'none';
+    if (arena)     arena.style.display      = 'none';
+    if (fundpool)  fundpool.style.display   = 'none';
+    if (newspage)  newspage.style.display   = 'block';
+    loadNewsPage();
   }
 };
 
@@ -2868,9 +2881,12 @@ function _mbRenderTable() {
     const starBtn = `<button class="fp-wl-star-btn ${starCls}" title="${r.in_watchlist ? '移除觀察清單' : '加入觀察清單'}"
       onclick="event.stopPropagation();fpToggleWatchlistStar('${sym}',${r.in_watchlist ? 'true' : 'false'})">${starChar}</button>`;
     const pricePrefix = r.region === 'tw' ? 'NT$' : '$';
+    const symLabel = (r.region === 'tw' && r.name)
+      ? `${sym} <span style="font-size:11px;color:var(--muted);font-weight:400;">${escapeHtml(r.name)}</span>`
+      : sym;
     return `<tr class="${r.in_watchlist ? 'fp-row-wl' : ''}" onclick="fpMBSelectRow('${sym}')">
       <td style="text-align:center;padding:4px 6px;">${starBtn}</td>
-      <td class="arena-mono" style="font-weight:700;">${sym}</td>
+      <td class="arena-mono" style="font-weight:700;">${symLabel}</td>
       <td class="arena-mono">${r.close != null ? pricePrefix + Number(r.close).toFixed(2) : '<span class="arena-muted">—</span>'}</td>
       <td class="arena-mono">${_mbFmtPct(r.chg_pct)}</td>
       <td class="arena-mono">${_mbFmtPct(r.chg_5d_pct)}</td>
@@ -3480,6 +3496,210 @@ window.switchGlobalPage = function(page) {
     if (_mbPollTimer) { clearInterval(_mbPollTimer); _mbPollTimer = null; }
   }
 };
+
+// ── (c2-R3) 台股搜尋 debounce ────────────────────────────────────────────────
+
+let _twSearchTimer = null;
+
+window.fpTwSearchDebounce = function() {
+  if (_twSearchTimer) clearTimeout(_twSearchTimer);
+  _twSearchTimer = setTimeout(fpTwSearchRun, 300);
+};
+
+async function fpTwSearchRun() {
+  const input = $('fpTwSearchInput');
+  const dropdown = $('fpTwSearchDropdown');
+  if (!input || !dropdown) return;
+  const q = input.value.trim();
+  if (!q) { dropdown.style.display = 'none'; return; }
+  try {
+    const data = await fetch(`/api/tw/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+    if (data.directory_empty) {
+      dropdown.innerHTML = `<div style="padding:10px;font-size:12px;color:var(--muted);">
+        台股目錄未初始化：請執行<br><code>python scripts\\ingest.py tw-directory</code></div>`;
+      dropdown.style.display = 'block';
+      return;
+    }
+    if (!data.items || !data.items.length) {
+      dropdown.innerHTML = `<div style="padding:10px;font-size:12px;color:var(--muted);">查無符合（ETF/權證暫不支援）</div>`;
+      dropdown.style.display = 'block';
+      return;
+    }
+    dropdown.innerHTML = data.items.map(it => {
+      const tag = it.market === 'twse' ? '上市' : '上櫃';
+      const priceBadge = it.has_prices
+        ? '<span style="color:var(--green);font-size:10px;">●已有價格</span>'
+        : '<span style="color:var(--muted);font-size:10px;">○未抓價</span>';
+      return `<div class="tw-search-item" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;"
+        onmouseover="this.style.background='var(--line)'" onmouseout="this.style.background=''"
+        onclick="fpTwSearchSelect('${escapeHtml(it.yahoo_symbol)}','${escapeHtml(it.name)}')">
+        <span style="font-weight:700;">${escapeHtml(it.code)}</span>
+        <span style="margin-left:6px;">${escapeHtml(it.name)}</span>
+        <span style="margin-left:6px;color:var(--muted);font-size:11px;">[${tag}]</span>
+        <span style="float:right;">${priceBadge}</span>
+      </div>`;
+    }).join('');
+    dropdown.style.display = 'block';
+  } catch (e) {
+    dropdown.style.display = 'none';
+  }
+}
+
+window.fpTwSearchSelect = async function(yahooSymbol, name) {
+  const dropdown = $('fpTwSearchDropdown');
+  const input = $('fpTwSearchInput');
+  const statusEl = $('fpAddSymbolStatus');
+  if (dropdown) dropdown.style.display = 'none';
+  if (input) input.value = '';
+  // 走既有 watchlist add 流程
+  if (statusEl) statusEl.textContent = `加入 ${yahooSymbol} 中...`;
+  try {
+    const resp = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: yahooSymbol }),
+    }).then(r => r.json());
+    if (resp.error) {
+      if (statusEl) statusEl.textContent = `錯誤：${resp.error}`;
+    } else {
+      if (statusEl) statusEl.textContent = `${yahooSymbol}（${name}）已加入，價格抓取中，約 1 分鐘後重新整理`;
+      fpLoadMarketBoard();
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '網路錯誤';
+  }
+};
+
+// 點擊頁面其他地方隱藏 dropdown
+document.addEventListener('click', function(e) {
+  const dd = $('fpTwSearchDropdown');
+  const input = $('fpTwSearchInput');
+  if (dd && input && !input.contains(e.target) && !dd.contains(e.target)) {
+    dd.style.display = 'none';
+  }
+});
+
+// ── (e-R2) 新聞·專家頁 ──────────────────────────────────────────────────────
+
+let _newsFeedCursor = null;
+let _newsFeedSymbol = '';
+let _newsFeedLoaded = false;
+
+function loadNewsPage() {
+  if (!_newsFeedLoaded) {
+    _newsFeedCursor = null;
+    _newsFeedSymbol = ($('newsFeedSymFilter') && $('newsFeedSymFilter').value.trim().toUpperCase()) || '';
+    _newsFeedLoaded = true;
+    _loadNewsFeed(true);
+    _loadExpertViews();
+  }
+}
+
+async function _loadNewsFeed(reset) {
+  const listEl = $('newsFeedList');
+  const moreBtn = $('newsFeedMoreBtn');
+  if (!listEl) return;
+  if (reset) {
+    listEl.innerHTML = '<p class="placeholder-text">載入中...</p>';
+    _newsFeedCursor = null;
+  }
+  const params = new URLSearchParams({ limit: '50' });
+  if (_newsFeedSymbol) params.set('symbol', _newsFeedSymbol);
+  if (_newsFeedCursor) params.set('before', _newsFeedCursor);
+  try {
+    const data = await fetch(`/api/news-feed?${params}`).then(r => r.json());
+    const items = data.items || [];
+    if (reset) listEl.innerHTML = '';
+    if (!items.length && reset) {
+      listEl.innerHTML = '<p class="placeholder-text" style="padding:12px;">無新聞資料</p>';
+    }
+    items.forEach(item => {
+      const symsHtml = (item.symbols || []).map(s =>
+        `<span class="news-sym-chip" style="display:inline-block;padding:1px 6px;margin:0 2px;border:1px solid var(--line);border-radius:3px;font-size:11px;cursor:pointer;"
+          onclick="fpTwSetNewsFilter('${escapeHtml(s)}')">${escapeHtml(s)}</span>`
+      ).join('');
+      const timeStr = (item.published_at || '').slice(0, 16).replace('T', ' ');
+      const srcHtml = item.source
+        ? `<span style="background:var(--line);padding:1px 6px;border-radius:3px;font-size:11px;">${escapeHtml(item.source)}</span>`
+        : '';
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px 0;border-bottom:1px solid var(--line);';
+      row.innerHTML = `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
+        ${srcHtml}
+        <span style="font-size:11px;color:var(--muted);">${escapeHtml(timeStr)}</span>
+        ${symsHtml}
+      </div>
+      <div><a href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener"
+              style="font-weight:600;color:var(--ink);text-decoration:none;"
+              onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
+        ${escapeHtml(item.title || '')}
+      </a></div>
+      ${item.summary ? `<div style="font-size:12px;color:var(--muted);margin-top:4px;">${escapeHtml(item.summary)}</div>` : ''}`;
+      listEl.appendChild(row);
+    });
+    if (items.length) _newsFeedCursor = items[items.length - 1].published_at;
+    if (moreBtn) moreBtn.style.display = data.has_more ? 'inline-block' : 'none';
+  } catch (e) {
+    if (reset) listEl.innerHTML = '<p class="placeholder-text">新聞載入失敗</p>';
+  }
+}
+
+window.newsFeedFilterChanged = function() {
+  _newsFeedLoaded = false;
+  _newsFeedSymbol = (($('newsFeedSymFilter') && $('newsFeedSymFilter').value.trim().toUpperCase()) || '');
+  _newsFeedLoaded = true;
+  _loadNewsFeed(true);
+};
+
+window.newsFeedClearFilter = function() {
+  const inp = $('newsFeedSymFilter');
+  if (inp) { inp.value = ''; }
+  _newsFeedSymbol = '';
+  _loadNewsFeed(true);
+};
+
+window.newsFeedLoadMore = function() {
+  _loadNewsFeed(false);
+};
+
+window.fpTwSetNewsFilter = function(sym) {
+  const inp = $('newsFeedSymFilter');
+  if (inp) { inp.value = sym; }
+  _newsFeedSymbol = sym;
+  _loadNewsFeed(true);
+};
+
+async function _loadExpertViews() {
+  const el = $('expertViewsList');
+  if (!el) return;
+  try {
+    const data = await fetch('/api/expert-views').then(r => r.json());
+    const views = data.views || data.expert_views || [];
+    if (!views.length) {
+      el.innerHTML = '<p class="placeholder-text" style="padding:12px;">無專家觀點資料</p>';
+      return;
+    }
+    el.innerHTML = views.map(v => {
+      const symsHtml = (v.symbols || []).map(s =>
+        `<span style="background:var(--line);padding:1px 6px;border-radius:3px;font-size:11px;">${escapeHtml(s)}</span>`
+      ).join(' ');
+      const credClass = (v.credibility || 0) >= 0.7 ? 'color:var(--green)' : (v.credibility || 0) >= 0.4 ? 'color:var(--ink)' : 'color:var(--muted)';
+      return `<div style="padding:10px 0;border-bottom:1px solid var(--line);">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
+          <span style="font-weight:600;">${escapeHtml(v.author || v.source || '—')}</span>
+          <span style="${credClass};font-size:12px;">信度 ${((v.credibility || 0) * 100).toFixed(0)}%</span>
+          ${symsHtml}
+          <span style="font-size:11px;color:var(--muted);">${escapeHtml((v.published_at || v.created_at || '').slice(0, 10))}</span>
+        </div>
+        ${v.title ? `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(v.title)}</div>` : ''}
+        <div style="font-size:13px;color:var(--muted);">${escapeHtml((v.text || v.content || '').slice(0, 300))}${(v.text || v.content || '').length > 300 ? '…' : ''}</div>
+        ${v.url ? `<a href="${escapeHtml(v.url)}" target="_blank" rel="noopener" style="font-size:12px;">來源連結</a>` : ''}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<p class="placeholder-text">專家觀點載入失敗</p>';
+  }
+}
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 

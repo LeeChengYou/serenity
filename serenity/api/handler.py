@@ -106,6 +106,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 payload = self.route_api(parsed.path, parse_qs(parsed.query))
                 self.send_json(payload)
+            except _HTTPResponse as exc:
+                self.send_json(exc.payload, status=exc.status)
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
@@ -272,6 +274,82 @@ class Handler(SimpleHTTPRequestHandler):
                     return {"memories": rows}
                 except Exception as e:
                     return {"error": str(e)}
+            # e-R1: 新聞流 API
+            if path == "/api/news-feed":
+                limit = min(int((query.get("limit") or [50])[0]), 200)
+                symbol = (query.get("symbol") or [""])[0].strip().upper() or None
+                before = (query.get("before") or [""])[0].strip() or None
+                params: list = []
+                where_clauses: list = []
+                if symbol:
+                    where_clauses.append("symbols LIKE ?")
+                    params.append(f'%"{symbol}"%')
+                if before:
+                    where_clauses.append("published_at < ?")
+                    params.append(before)
+                where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+                # fetch limit+1 to determine has_more
+                rows_raw = con.execute(
+                    f"SELECT id, title, source, url, published_at, scope, symbols, summary "
+                    f"FROM news {where_sql} ORDER BY published_at DESC LIMIT ?",
+                    params + [limit + 1],
+                ).fetchall()
+                has_more = len(rows_raw) > limit
+                items = []
+                for r in rows_raw[:limit]:
+                    try:
+                        syms = json.loads(r[6]) if r[6] else []
+                        if not isinstance(syms, list):
+                            syms = []
+                    except Exception:
+                        syms = []
+                    items.append({
+                        "id":           r[0],
+                        "title":        r[1],
+                        "source":       r[2],
+                        "url":          r[3],
+                        "published_at": r[4],
+                        "scope":        r[5],
+                        "symbols":      syms,
+                        "summary":      r[7],
+                    })
+                return {"items": items, "has_more": has_more}
+            # c2-R2: 台股目錄搜尋
+            if path == "/api/tw/search":
+                q = (query.get("q") or [""])[0].strip()
+                if not q:
+                    raise _HTTPResponse({"error": "q 參數不能為空"}, 400)
+                # directory_empty 旗標
+                try:
+                    dir_cnt = con.execute("SELECT COUNT(*) FROM tw_symbols").fetchone()[0]
+                except Exception:
+                    dir_cnt = 0
+                if dir_cnt == 0:
+                    return {"items": [], "directory_empty": True}
+                like_q = f"%{q}%"
+                rows_raw = con.execute(
+                    """
+                    SELECT t.code, t.name, t.market, t.yahoo_symbol,
+                           CASE WHEN p.symbol IS NOT NULL THEN 1 ELSE 0 END AS has_prices
+                    FROM tw_symbols t
+                    LEFT JOIN (SELECT DISTINCT symbol FROM prices) p
+                         ON p.symbol = t.yahoo_symbol
+                    WHERE t.code LIKE ? OR t.name LIKE ?
+                    LIMIT 20
+                    """,
+                    (q + "%", like_q),
+                ).fetchall()
+                items = [
+                    {
+                        "code":         r[0],
+                        "name":         r[1],
+                        "market":       r[2],
+                        "yahoo_symbol": r[3],
+                        "has_prices":   bool(r[4]),
+                    }
+                    for r in rows_raw
+                ]
+                return {"items": items, "directory_empty": False}
             # R5-3: Expert views — all symbols (latest 20)
             if path == "/api/expert-views":
                 return expert_views_all_payload(con)

@@ -107,6 +107,7 @@ def connect():
     migrate_news(con)
     migrate_fundamentals(con)
     migrate_analyst_estimates(con)
+    migrate_tw_symbols(con)
     return con
 
 
@@ -228,6 +229,135 @@ def migrate_analyst_estimates(con):
             on analyst_estimates(symbol)
     """)
     con.commit()
+
+
+def migrate_tw_symbols(con):
+    """
+    Idempotent migration: create tw_symbols table (c2-R1).
+    code: 4-6 digit (+ optional single uppercase letter) company code
+    market: twse | tpex
+    yahoo_symbol: code+'.TW' (twse) or code+'.TWO' (tpex)
+    """
+    con.execute("""
+        create table if not exists tw_symbols (
+            code         TEXT PRIMARY KEY,
+            name         TEXT NOT NULL,
+            market       TEXT NOT NULL,
+            yahoo_symbol TEXT NOT NULL UNIQUE,
+            updated_at   TEXT NOT NULL
+        )
+    """)
+    con.commit()
+
+
+_TW_CODE_RE = re.compile(r"^\d{4,6}[A-Z]?$")
+
+_TWSE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+_TPEX_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+
+_TW_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
+
+def fetch_tw_directory(con) -> tuple:
+    """
+    c2-R1: 抓台股全目錄 (上市 + 上櫃)，INSERT OR REPLACE 到 tw_symbols。
+    回傳 (twse_count, tpex_count)。
+    單端失敗 → 保留舊列印警告；兩端皆失敗 → raise。
+    """
+    now_str = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    twse_count = 0
+    tpex_count = 0
+    errors = []
+
+    # ── 上市 (TWSE) ──────────────────────────────────────────────────────────
+    try:
+        req = urllib.request.Request(_TWSE_URL, headers=_TW_HEADERS)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            items = json.loads(resp.read().decode("utf-8"))
+        for item in items:
+            code = str(item.get("公司代號", "")).strip()
+            name = str(item.get("公司簡稱", "")).strip()
+            if not _TW_CODE_RE.match(code) or not name:
+                continue
+            con.execute(
+                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, updated_at)"
+                " VALUES(?, ?, 'twse', ?, ?)",
+                (code, name, code + ".TW", now_str),
+            )
+            twse_count += 1
+        con.commit()
+        print(f"[tw-directory] TWSE: {twse_count} rows upserted")
+    except Exception as exc:
+        errors.append(f"TWSE: {exc}")
+        print(f"[tw-directory] WARN TWSE failed: {exc}", file=sys.stderr)
+
+    # ── 上櫃 (TPEX) ──────────────────────────────────────────────────────────
+    try:
+        req = urllib.request.Request(_TPEX_URL, headers=_TW_HEADERS)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            items = json.loads(resp.read().decode("utf-8"))
+        for item in items:
+            code = str(item.get("SecuritiesCompanyCode", "")).strip()
+            name = str(item.get("CompanyAbbreviation", "")).strip()
+            if not _TW_CODE_RE.match(code) or not name:
+                continue
+            con.execute(
+                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, updated_at)"
+                " VALUES(?, ?, 'tpex', ?, ?)",
+                (code, name, code + ".TWO", now_str),
+            )
+            tpex_count += 1
+        con.commit()
+        print(f"[tw-directory] TPEX: {tpex_count} rows upserted")
+    except Exception as exc:
+        errors.append(f"TPEX: {exc}")
+        print(f"[tw-directory] WARN TPEX failed: {exc}", file=sys.stderr)
+
+    if len(errors) == 2:
+        raise RuntimeError(f"[tw-directory] both markets failed: {'; '.join(errors)}")
+
+    return twse_count, tpex_count
+
+
+# 種子代號清單 (c2-R4)
+_TW_SEED_CODES = [
+    "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891",
+    "2886", "2884", "2303", "3711", "2002", "1301", "1303", "1216", "2357",
+    "3008", "2892",
+]
+
+
+def fetch_tw_seed(con) -> None:
+    """
+    c2-R4: 逐檔種子代號 — 不在目錄跳過；prices 已有跳過；否則 fetch_prices_for_symbol。
+    """
+    for code in _TW_SEED_CODES:
+        row = con.execute(
+            "SELECT yahoo_symbol FROM tw_symbols WHERE code=?", (code,)
+        ).fetchone()
+        if row is None:
+            print(f"[tw-seed] {code}: 不在 tw_symbols 目錄，跳過（先執行 tw-directory）", file=sys.stderr)
+            continue
+        yahoo_sym = row[0]
+        has_prices = con.execute(
+            "SELECT 1 FROM prices WHERE symbol=? LIMIT 1", (yahoo_sym,)
+        ).fetchone()
+        if has_prices:
+            print(f"[tw-seed] {yahoo_sym}: 已有價格，跳過")
+            continue
+        try:
+            n = fetch_prices_for_symbol(con, yahoo_sym)
+            print(f"[tw-seed] {yahoo_sym}: {n} bars inserted")
+        except Exception as exc:
+            print(f"[tw-seed] {yahoo_sym}: 抓取失敗 — {exc}", file=sys.stderr)
+        time.sleep(0.5)
 
 
 def parse_curl(path: Path):
@@ -1573,7 +1703,7 @@ def main():
     ap = argparse.ArgumentParser(description="Ingest Serenity X posts, symbols and Yahoo prices into SQLite.")
     ap.add_argument("command", choices=[
         "fetch-x", "prices", "all", "stats", "stocktwits", "news", "fundamentals",
-        "benchmarks", "estimates",
+        "benchmarks", "estimates", "tw-directory", "tw-seed",
     ])
     ap.add_argument("--max-pages", type=int, default=20)
     ap.add_argument("--days", type=int, default=420)
@@ -1603,6 +1733,19 @@ def main():
         fetch_benchmarks(days_back=args.days_back)
     if args.command == "estimates":
         fetch_estimates(min_mentions=args.min_mentions, pause=args.pause)
+    if args.command == "tw-directory":
+        con = connect()
+        try:
+            twse_n, tpex_n = fetch_tw_directory(con)
+            print(f"[tw-directory] 完成：上市 {twse_n}、上櫃 {tpex_n}")
+        finally:
+            con.close()
+    if args.command == "tw-seed":
+        con = connect()
+        try:
+            fetch_tw_seed(con)
+        finally:
+            con.close()
     if args.command == "stats":
         con = connect()
         try:
