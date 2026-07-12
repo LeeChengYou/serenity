@@ -297,6 +297,99 @@ narrative + 歷史報告列表。快取升版 `20260712-fundpool5` / `serenity-v
 範圍外(之後再議):批次情緒/翻譯切本地、deep dive 報告記憶注入 consult。
 
 ---
+
+## (c-2) 台股全目錄 + 按需抓價【2026-07-12 定稿】
+
+使用者決定:目錄全收(上市+上櫃 ~1800 檔可搜尋),**按需抓價**(點選/加觀察清單
+才抓),不做全市場每日抓價。目錄來源已實測可用(2026-07-12 curl 驗證):
+- 上市:`https://openapi.twse.com.tw/v1/opendata/t187ap03_L`(欄位:公司代號、公司簡稱)
+- 上櫃:`https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O`
+  (欄位:SecuritiesCompanyCode、CompanyAbbreviation)
+
+### c2-R1 目錄擷取(scripts/ingest.py)
+- migrate 加表:`tw_symbols(code TEXT PRIMARY KEY, name TEXT NOT NULL,
+  market TEXT NOT NULL, yahoo_symbol TEXT NOT NULL UNIQUE, updated_at TEXT NOT NULL)`
+  (market ∈ twse|tpex)。
+- `fetch_tw_directory(con) -> tuple[int, int]`(上市數、上櫃數):
+  兩端點各 GET(timeout 30s,HTTP 寫法照 ingest 既有模式);code 須符合
+  `^\d{4,6}[A-Z]?$` 否則跳過;yahoo_symbol = code+`.TW`(上市)/`.TWO`(上櫃);
+  INSERT OR REPLACE。**單端失敗 → 該市場保留舊列不清空、印警告;兩端皆失敗 → raise。**
+- CLI 子指令:`python scripts/ingest.py tw-directory`。
+
+### c2-R2 搜尋 API
+- `GET /api/tw/search?q=...`:q 空/缺 → 400;比對 code 前綴 OR name 子字串
+  (LIKE);limit 20;回 `{"items":[{code,name,market,yahoo_symbol,has_prices}],
+  "directory_empty":bool}`(has_prices = prices 表有該 yahoo_symbol 列)。
+
+### c2-R3 UI(行情板)
+- 台股搜尋框(現有「＋新增代號」旁):輸入 → debounce 300ms → /api/tw/search
+  dropdown(代號、簡稱、市場、已有價格標記)→ 點選 → 走既有 watchlist add +
+  背景抓價流程。directory_empty → 提示「台股目錄未初始化:請執行
+  python scripts\ingest.py tw-directory」。空結果 → 「查無符合(ETF/權證暫不支援)」。
+- 台股列顯示中文簡稱:market_board_payload 對 region='tw' 的 rows JOIN
+  tw_symbols 附 `name` 欄;前端顯示「2330.TW 台積電」;個股詳情標題同理。
+
+### c2-R4 種子預載
+- `data/tw_seed_symbols.txt`:20 檔權值股代號(檔頭註記「2026-07 快照,僅為
+  預載清單,非成分股即時名單」):2330 2317 2454 2308 2382 2412 2881 2882 2891
+  2886 2884 2303 3711 2002 1301 1303 1216 2357 3008 2892。
+- CLI `python scripts/ingest.py tw-seed`:逐檔——不在 tw_symbols → 印警告跳過
+  (防打錯,名稱一律以目錄為準,不硬編);prices 已有 → 跳過;否則
+  fetch_prices_for_symbol(yahoo_symbol),每檔間 sleep 0.5s。
+
+### c2-R5 誠實邊界
+- ETF/權證不在公司基本資料目錄 → 此輪搜尋不到(UI 空結果已註明)。
+- 台股下單仍硬擋(Phase 3)、中文新聞仍未接(Phase 2,頁面如實標注)。
+
+### c2-驗收(新檔 scratch/test_tw_directory.py;假 HTTP fixture;tempfile DB)
+1. fetch_tw_directory:fixture 各 3 檔 → 6 列、market/yahoo_symbol 正確;
+   重跑冪等;畸形 code 被跳過。
+2. 單端失敗(fixture 回 500)→ 另一市場正常更新、失敗市場舊列保留、不 raise;
+   兩端皆失敗 → raise。
+3. /api/tw/search:code 前綴命中、name 子字串命中、limit 20、q 空 → 400、
+   目錄空 → directory_empty=true。
+4. market_board_payload:台股列帶 name(插 tw_symbols + prices 假列驗證)。
+5. tw-seed:目錄外 code 跳過、已有價格跳過、其餘呼叫 fetch_prices_for_symbol
+   (monkeypatch 計數,不打網路)。
+6. 全套迴歸 + py_compile + node --check。
+7. 真機冒煙(merge 後由監督者執行):實跑 tw-directory(期望 ~1000+800 檔)、
+   tw-seed(20 檔實抓)、搜尋「台積」「2454」、行情板台股列帶簡稱。
+
+## (e) 新聞·專家獨立頁【2026-07-12 定稿】
+
+使用者決定:一個頂層頁、一頁兩區(新聞流 + 專家觀點);台股中文新聞源這輪
+不做,頁面誠實標示。資料現況:news 6,924 列(symbols 欄為 JSON 陣列字串、
+scope ∈ macro|symbol)、expert_views 87 列、`GET /api/expert-views` 已存在。
+
+### e-R1 API `GET /api/news-feed`
+- 參數:`symbol`(選)、`limit`(預設 50、上限 200 夾住)、`before`(選,ISO 時間)。
+- 查 news 表,published_at DESC;symbol 給定 → symbols JSON 陣列含該 symbol
+  (`LIKE '%"SYM"%'`,格式已驗證);before 給定 → published_at < before。
+- 回 `{"items":[{id,title,source,url,published_at,scope,symbols,summary}],
+  "has_more":bool}`;symbols 用 json.loads,壞列回 `[]` 不炸。
+
+### e-R2 UI
+- 頂層導航加「📰 新聞·專家」(switchGlobalPage,比照既有頁面機制)。
+- 新聞流區:symbol 篩選輸入(可清除)、每列 = 來源 chip + 時間 + symbols chips
+  (點 chip 即設為篩選)+ 標題連結(新分頁開 url)+ summary;
+  「載入更多」用 before cursor(帶最後一列 published_at)。
+- 專家觀點區:GET /api/expert-views 全量;卡片 = author/source、credibility、
+  symbols、時間、title/text 摘要、連結。
+- 頁首誠實標注:「台股中文新聞源尚未接入(Phase 2),目前以美股英文源為主」。
+- 快取升版:index.html 兩處 `?v=20260712-newsx1`、sw.js `'serenity-v9-newsx'`。
+
+### e-驗收(新檔 scratch/test_news_page.py;tempfile DB 副本)
+1. news-feed:預設 limit 50、排序 DESC;limit>200 被夾到 200。
+2. symbol 篩選:只回含該 symbol 的列(DB 真實列驗證);macro 列(symbols=[])
+   不出現在 symbol 篩選結果。
+3. before cursor:第二頁全部 published_at < cursor;has_more 語義正確
+   (還有更舊列 → true,取盡 → false)。
+4. 構造壞 symbols JSON 列 → API 不炸,該列 symbols=[]。
+5. /api/expert-views 迴歸不變。
+6. 全套迴歸 + py_compile + node --check。
+
+---
 Changelog:
 - 2026-07-12 初版;(a) 詳細規格,(b)(c) 路線圖。
 - 2026-07-12 追加 (d-2) outcome 回填、(b-2) 本地 LLM 接管競技場 詳細規格。
+- 2026-07-12 追加 (c-2) 台股全目錄+按需抓價、(e) 新聞·專家獨立頁 詳細規格。
