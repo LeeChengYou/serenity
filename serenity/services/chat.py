@@ -163,8 +163,10 @@ def handle_chat_api(payload):
             if overview:
                 db_context += "\n" + overview
 
-            # Get list of all known symbols in DB
-            db_symbols = [r[0] for r in con.execute("select distinct symbol from mentions").fetchall()]
+            # Get list of all known symbols in DB（c-R3：擴為 mentions ∪ prices）
+            db_symbols = [r[0] for r in con.execute(
+                "select distinct symbol from mentions union select distinct symbol from prices"
+            ).fetchall()]
 
             # Extract explicit symbols (e.g. $TSM, NVDA)
             words = re.findall(r'[A-Za-z0-9.]+', user_message.upper())

@@ -2799,6 +2799,7 @@ let _mbSortCol = 'chg_pct'; // 預設按漲跌%排序
 let _mbSortAsc = false;      // 預設降序（漲最多在前）
 let _mbPollTimer = null;
 let _mbWLOnly = false;       // 「只看觀察清單」toggle 狀態
+let _mbRegionFilter = 'all'; // 地區篩選：'all' | 'us' | 'tw'
 
 // 格式化數字輔助
 function _mbFmtPct(v) {
@@ -2842,6 +2843,7 @@ function _mbRenderTable() {
   let rows = _mbData;
   if (search) rows = rows.filter(r => r.symbol.includes(search));
   if (_mbWLOnly) rows = rows.filter(r => r.in_watchlist);
+  if (_mbRegionFilter !== 'all') rows = rows.filter(r => r.region === _mbRegionFilter);
 
   // watchlist 先行，再按 sort col
   rows = rows.slice().sort((a, b) => {
@@ -2865,10 +2867,11 @@ function _mbRenderTable() {
     const starChar = r.in_watchlist ? '★' : '☆';
     const starBtn = `<button class="fp-wl-star-btn ${starCls}" title="${r.in_watchlist ? '移除觀察清單' : '加入觀察清單'}"
       onclick="event.stopPropagation();fpToggleWatchlistStar('${sym}',${r.in_watchlist ? 'true' : 'false'})">${starChar}</button>`;
+    const pricePrefix = r.region === 'tw' ? 'NT$' : '$';
     return `<tr class="${r.in_watchlist ? 'fp-row-wl' : ''}" onclick="fpMBSelectRow('${sym}')">
       <td style="text-align:center;padding:4px 6px;">${starBtn}</td>
       <td class="arena-mono" style="font-weight:700;">${sym}</td>
-      <td class="arena-mono">${r.close != null ? '$' + Number(r.close).toFixed(2) : '<span class="arena-muted">—</span>'}</td>
+      <td class="arena-mono">${r.close != null ? pricePrefix + Number(r.close).toFixed(2) : '<span class="arena-muted">—</span>'}</td>
       <td class="arena-mono">${_mbFmtPct(r.chg_pct)}</td>
       <td class="arena-mono">${_mbFmtPct(r.chg_5d_pct)}</td>
       <td class="arena-mono">${_mbFmtVol(r.volume)}</td>
@@ -2884,6 +2887,49 @@ window.fpToggleWLFilter = function() {
   const btn = $('fpMarketWLOnlyBtn');
   if (btn) btn.classList.toggle('active', _mbWLOnly);
   _mbRenderTable();
+};
+
+// 地區篩選(c-R2)：全部 / 美股 / 台股
+window.fpSetRegionFilter = function(region) {
+  _mbRegionFilter = region;
+  ['fpRegionAllBtn', 'fpRegionUSBtn', 'fpRegionTWBtn'].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.remove('active');
+  });
+  const map = { all: 'fpRegionAllBtn', us: 'fpRegionUSBtn', tw: 'fpRegionTWBtn' };
+  const activeEl = $(map[region]);
+  if (activeEl) activeEl.classList.add('active');
+  _mbRenderTable();
+};
+
+// ＋新增代號到觀察清單(c-R1)
+window.fpAddSymbolToWatchlist = async function() {
+  const input = $('fpAddSymbolInput');
+  const statusEl = $('fpAddSymbolStatus');
+  if (!input) return;
+  const sym = input.value.trim().toUpperCase();
+  if (!sym) return;
+  if (statusEl) statusEl.textContent = '新增中...';
+  try {
+    const resp = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: sym }),
+    });
+    if (resp.ok) {
+      input.value = '';
+      if (statusEl) statusEl.textContent = '已加入，價格抓取中，約 1 分鐘後重新整理';
+      // 更新本地行情板資料
+      await fpLoadMarketBoard();
+      // 3 秒後清掉提示
+      setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      if (statusEl) statusEl.textContent = `錯誤：${data.error || resp.status}`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `錯誤：${e.message}`;
+  }
 };
 
 // 點星星 → 呼叫 POST /api/watchlist 加入或移除
@@ -2992,7 +3038,8 @@ window.fpMBSelectRow = function(symbol) {
   const row = _mbData.find(r => r.symbol === symbol);
   if (row) {
     if (detailPriceEl) {
-      detailPriceEl.textContent = row.close != null ? `$${Number(row.close).toFixed(2)}` : '—';
+      const pPrefix = row.region === 'tw' ? 'NT$' : '$';
+      detailPriceEl.textContent = row.close != null ? `${pPrefix}${Number(row.close).toFixed(2)}` : '—';
     }
     if (detailChgEl) {
       const chg = row.chg_pct;

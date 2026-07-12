@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool5" />
+  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool6" />
 </head>
 <body>
   <main class="shell">
@@ -134,7 +134,15 @@
             <div class="fp-market-controls">
               <input type="text" id="fpMarketSearch" placeholder="搜尋代號 NVDA…" />
               <button id="fpMarketWLOnlyBtn" class="fp-wl-toggle-btn" onclick="fpToggleWLFilter()">★ 只看觀察清單</button>
+              <button id="fpRegionAllBtn" class="fp-wl-toggle-btn active" onclick="fpSetRegionFilter('all')">全部</button>
+              <button id="fpRegionUSBtn" class="fp-wl-toggle-btn" onclick="fpSetRegionFilter('us')">🇺🇸 美股</button>
+              <button id="fpRegionTWBtn" class="fp-wl-toggle-btn" onclick="fpSetRegionFilter('tw')">🇹🇼 台股</button>
               <span class="fp-market-hint">點列選股；點★加入/移除觀察清單</span>
+            </div>
+            <div class="fp-market-controls" style="margin-top:4px;">
+              <input type="text" id="fpAddSymbolInput" placeholder="新增代號 2330.TW…" style="width:140px;" />
+              <button class="fp-wl-toggle-btn" onclick="fpAddSymbolToWatchlist()" style="min-width:90px;">＋新增代號</button>
+              <span id="fpAddSymbolStatus" style="font-size:11px;color:var(--muted);margin-left:6px;"></span>
             </div>
             <div class="fp-market-table-wrap">
               <table class="arena-table fp-market-table" id="fpMarketTable">
@@ -586,7 +594,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/app.js?v=20260712-fundpool5"></script>
+  <script src="/app.js?v=20260712-fundpool6"></script>
   <script>
     // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
     if ('serviceWorker' in navigator) {

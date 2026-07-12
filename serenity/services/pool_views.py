@@ -7,6 +7,17 @@ from __future__ import annotations
 import sqlite3
 
 
+def region(symbol: str) -> str:
+    """
+    判斷代號所屬地區(c-R2)。
+    .TW / .TWO 結尾 → 'tw'；其餘 → 'us'。
+    """
+    sym_upper = (symbol or "").upper()
+    if sym_upper.endswith(".TW") or sym_upper.endswith(".TWO"):
+        return "tw"
+    return "us"
+
+
 def pool_list_payload(con: sqlite3.Connection) -> dict:
     """
     GET /api/pools
@@ -316,6 +327,7 @@ def market_board_payload(con: sqlite3.Connection) -> dict:
             "in_watchlist":  sym in wl_set,
             "mention_count": mention_map.get(sym, 0),
             "spark":         spark_map.get(sym, []),
+            "region":        region(sym),
         })
 
     return {"as_of": as_of, "rows": rows}

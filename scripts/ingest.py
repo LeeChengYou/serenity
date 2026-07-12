@@ -579,6 +579,87 @@ def fetch_prices(days_back=420, min_mentions=2):
         con.close()
 
 
+def fetch_prices_for_symbol(con, symbol: str, days_back: int = 420) -> int:
+    """
+    單一代號版抓價(c-R1)。
+    重用 yahoo_chart 與 fetch_prices 內的 upsert 邏輯，行為一致：
+    OHLCV upsert、_guard 防呆。
+    回傳插入/更新的 bar 數；失敗 raise（呼叫端決定如何處理）。
+    """
+    today = dt.datetime.now(dt.timezone.utc)
+
+    # 確認是否需要增量或全量
+    row = con.execute("select max(date) from prices where symbol=?", (symbol,)).fetchone()
+    latest_date_str = row[0] if row else None
+
+    ohlc_ready = False
+    if latest_date_str:
+        orow = con.execute(
+            "select open from prices where symbol=? and date=?",
+            (symbol, latest_date_str),
+        ).fetchone()
+        ohlc_ready = orow is not None and orow[0] is not None
+
+    if latest_date_str and ohlc_ready:
+        latest_dt = dt.datetime.strptime(latest_date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+        days_diff = (today - latest_dt).days
+        if days_diff <= 1:
+            print(f"price {symbol} - already up to date (latest: {latest_date_str})")
+            return 0
+        fetch_start = latest_dt + dt.timedelta(days=1)
+        print(f"price {symbol} - incremental from {fetch_start.date()} (latest: {latest_date_str})")
+    else:
+        fetch_start = today - dt.timedelta(days=days_back)
+        reason = "backfill OHLC" if latest_date_str else "first fetch"
+        print(f"price {symbol} - full fetch ({reason}) from {fetch_start.date()}")
+
+    data = yahoo_chart(symbol, fetch_start, today + dt.timedelta(days=2))
+    result = (data.get("chart") or {}).get("result") or []
+    if not result:
+        print(f"  no yahoo result for {symbol}")
+        return 0
+
+    res = result[0]
+    timestamps = res.get("timestamp") or []
+    quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
+    opens   = quote.get("open")   or []
+    highs   = quote.get("high")   or []
+    lows    = quote.get("low")    or []
+    closes  = quote.get("close")  or []
+    volumes = quote.get("volume") or []
+
+    def _guard(val):
+        """Return float if finite and within a sane price range, else None."""
+        if val is None:
+            return None
+        try:
+            f = float(val)
+            if not math.isfinite(f) or f < 0 or f > 10_000_000:
+                return None
+            return f
+        except (TypeError, ValueError):
+            return None
+
+    inserted = 0
+    for ts, open_v, high_v, low_v, close_v, vol in zip(timestamps, opens, highs, lows, closes, volumes):
+        close_f = _guard(close_v)
+        if close_f is None or close_f <= 0:
+            continue  # skip bars with bad close — never fabricate
+        open_f = _guard(open_v)
+        high_f = _guard(high_v)
+        low_f  = _guard(low_v)
+        date = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat()
+        con.execute(
+            """insert or replace into prices(symbol, date, open, high, low, close, volume)
+               values (?, ?, ?, ?, ?, ?, ?)""",
+            (symbol, date, open_f, high_f, low_f, close_f, int(vol or 0) if vol is not None else None),
+        )
+        inserted += 1
+    con.commit()
+    print(f"  {inserted} bars for {symbol}")
+    return inserted
+
+
 def fetch_stocktwits(symbol: str, con=None, limit: int = 30) -> "int | None":
     """
     Fetch up to `limit` recent messages for `symbol` from the public

@@ -333,6 +333,11 @@ def place_order(
     if sym_exists is None:
         return reject(f"symbol {symbol!r} 不在 prices 表，無法下單")
 
+    # 3b. 台股暫不支援下單（c-R3）
+    sym_upper = (symbol or "").upper()
+    if sym_upper.endswith(".TW") or sym_upper.endswith(".TWO"):
+        return reject("台股暫不支援下單（TWD 幣別，Phase 3）")
+
     cash = _get_current_cash(con, pool_id)
 
     if side.upper() == "BUY":

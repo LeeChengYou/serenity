@@ -9,7 +9,7 @@ import threading
 from datetime import datetime
 
 
-_SYM_RE = re.compile(r"^[A-Za-z.\-]{1,10}$")
+_SYM_RE = re.compile(r"^[A-Za-z0-9.\-]{1,12}$")
 
 
 def _watchlist_payload(con) -> dict:
@@ -45,7 +45,7 @@ def handle_post_watchlist(con, payload: dict) -> tuple:
     if "add" in payload:
         raw = str(payload["add"]).strip()
         if not _SYM_RE.match(raw):
-            raise ValueError(f"代號格式錯誤：{raw!r}（允許 ^[A-Za-z.\\-]{{1,10}}$）")
+            raise ValueError(f"代號格式錯誤：{raw!r}（允許 ^[A-Za-z0-9.\\-]{{1,12}}$）")
         sym = raw.upper()
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         con.execute(
