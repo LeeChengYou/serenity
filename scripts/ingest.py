@@ -265,6 +265,18 @@ _TW_HEADERS = {
 }
 
 
+def _tw_ssl_context():
+    """
+    TWSE/TPEx 官方憑證缺 Subject Key Identifier 擴展，Python 3.13 預設的
+    VERIFY_X509_STRICT 會拒絕（2026-07-13 實測）。只清 strict 旗標，
+    保留憑證鏈與主機名驗證，不整個關掉驗證。
+    """
+    import ssl
+    ctx = ssl.create_default_context()
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return ctx
+
+
 def fetch_tw_directory(con) -> tuple:
     """
     c2-R1: 抓台股全目錄 (上市 + 上櫃)，INSERT OR REPLACE 到 tw_symbols。
@@ -279,7 +291,7 @@ def fetch_tw_directory(con) -> tuple:
     # ── 上市 (TWSE) ──────────────────────────────────────────────────────────
     try:
         req = urllib.request.Request(_TWSE_URL, headers=_TW_HEADERS)
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=_tw_ssl_context()) as resp:
             items = json.loads(resp.read().decode("utf-8"))
         for item in items:
             code = str(item.get("公司代號", "")).strip()
@@ -301,7 +313,7 @@ def fetch_tw_directory(con) -> tuple:
     # ── 上櫃 (TPEX) ──────────────────────────────────────────────────────────
     try:
         req = urllib.request.Request(_TPEX_URL, headers=_TW_HEADERS)
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=_tw_ssl_context()) as resp:
             items = json.loads(resp.read().decode("utf-8"))
         for item in items:
             code = str(item.get("SecuritiesCompanyCode", "")).strip()
