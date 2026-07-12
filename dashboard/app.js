@@ -3039,6 +3039,7 @@ window.fpSwitchDetailTab = function(tab) {
     news:     'fpDtabNews',
     dossier:  'fpDtabDossier',
     experts:  'fpDtabExperts',
+    deepdive: 'fpDtabDeepdive',
   };
   Object.values(paneMap).forEach(id => {
     const el = $(id);
@@ -3055,6 +3056,7 @@ window.fpSwitchDetailTab = function(tab) {
   else if (tab === 'news')      { if (!cache.news)      fpDetailLoadNews(_fpSelectedSym); }
   else if (tab === 'dossier')   { if (!cache.dossier)   fpDetailLoadDossier(_fpSelectedSym); }
   else if (tab === 'experts')   { if (!cache.experts)   fpDetailLoadExperts(_fpSelectedSym); }
+  else if (tab === 'deepdive')  { if (!cache.deepdive)  fpDetailLoadDeepdive(_fpSelectedSym); }
 };
 
 function fpDetailLoadChart(sym) {
@@ -3196,6 +3198,184 @@ function fpDetailLoadExperts(sym) {
       (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).experts = true;
     })
     .catch(() => { pane.innerHTML = '<p class="fp-detail-empty">載入失敗</p>'; });
+}
+
+// ── 深度研究（d-R4）──────────────────────────────────────────────────────────
+
+function _ddFmt(v, decimals) {
+  if (v === null || v === undefined) return '—';
+  return Number(v).toFixed(decimals !== undefined ? decimals : 2);
+}
+function _ddFmtPct(v) {
+  if (v === null || v === undefined) return '—';
+  const s = Number(v).toFixed(2);
+  return (Number(v) >= 0 ? '+' : '') + s + '%';
+}
+function _ddFmtArr(arr) {
+  if (!arr || !arr.length) return '—';
+  return arr.map(x => Number(x).toFixed(2)).join('、');
+}
+
+function fpDetailLoadDeepdive(sym) {
+  const numWrap = $('fpDdNumeric');
+  if (!numWrap) return;
+  numWrap.innerHTML = '<p class="fp-detail-loading">載入中...</p>';
+  // 重置 narrative / history
+  const narDiv = $('ddNarrative');
+  const histWrap = $('ddHistoryWrap');
+  const statusEl = $('ddReportStatus');
+  if (narDiv) { narDiv.style.display = 'none'; narDiv.textContent = ''; }
+  if (histWrap) histWrap.style.display = 'none';
+  if (statusEl) statusEl.textContent = '';
+
+  apiFetch(`/api/deepdive/${encodeURIComponent(sym)}`)
+    .then(r => r.ok ? r.json() : r.json().then(e => { throw new Error(e.error || '載入失敗'); }))
+    .then(data => {
+      if (data.error) { numWrap.innerHTML = `<p class="fp-detail-empty">${escapeHtml(data.error)}</p>`; return; }
+      numWrap.innerHTML = _ddRenderNumeric(data);
+      (_fpDetailCache[sym] || (_fpDetailCache[sym] = {})).deepdive = true;
+      // 同時載入歷史報告
+      fpDdLoadHistory(sym);
+    })
+    .catch(e => { numWrap.innerHTML = `<p class="fp-detail-empty">載入失敗：${escapeHtml(e.message)}</p>`; });
+}
+
+function _ddRenderNumeric(d) {
+  const t   = d.technical   || {};
+  const ev  = d.events      || {};
+  const val = d.valuation   || {};
+  const ref = d.reference_levels || {};
+  const pos = ev.positive   || {};
+  const neg = ev.negative   || {};
+  const insuf = ev.insufficient;
+  const entryZone = ref.entry_zone;
+  const exitZone  = ref.exit_zone;
+
+  function blk(title, rows) {
+    return `<div class="dd-block">
+      <h4 class="dd-block-title">${escapeHtml(title)}</h4>
+      <table class="dd-table">${rows.map(([k,v,b]) =>
+        `<tr><td class="dd-k">${escapeHtml(k)}</td><td class="dd-v">${escapeHtml(String(v))}</td>${b ? `<td class="dd-basis">${escapeHtml(b)}</td>` : '<td></td>'}</tr>`
+      ).join('')}</table>
+    </div>`;
+  }
+
+  const insuffNote = insuf
+    ? '<span class="dd-insuf-warn">⚠ 樣本不足（正負合計 < 10），僅供參考</span>' : '';
+
+  const techBlock = blk('技術結構', [
+    ['RSI14',       t.rsi14 ?? '—', ''],
+    ['EMA20',       _ddFmt(t.ema20), ''],
+    ['EMA50',       _ddFmt(t.ema50), ''],
+    ['EMA200',      _ddFmt(t.ema200), ''],
+    ['ATR14',       _ddFmt(t.atr14), ''],
+    ['年化波動率',   _ddFmtPct(t.ann_vol_pct), '近 120 日報酬樣本標準差×√252'],
+    ['60日高',      _ddFmt(t.hi_60d), '近 60 交易日 close 最高'],
+    ['60日低',      _ddFmt(t.lo_60d), '近 60 交易日 close 最低'],
+    ['近20日漲跌',  _ddFmtPct(t.chg_20d_pct), ''],
+    ['最大回撤(1y)', _ddFmtPct(t.max_drawdown_1y_pct), '近 250 交易日 close 最大回撤'],
+    ['支撐位',      _ddFmtArr(t.support_levels), 'swing low（嚴格低於前後各2日），由近到遠'],
+    ['壓力位',      _ddFmtArr(t.resistance_levels), 'swing high（嚴格高於前後各2日），由近到遠'],
+    ['樣本天數',    t.n_days ?? '—', ''],
+  ]);
+
+  const evBlock = `<div class="dd-block">
+    <h4 class="dd-block-title">事件研究 ${insuffNote}</h4>
+    <table class="dd-table">
+      <tr><th></th><th>正面事件</th><th>負面事件</th></tr>
+      <tr><td class="dd-k">樣本數</td><td class="dd-v">${pos.n ?? 0}</td><td class="dd-v">${neg.n ?? 0}</td></tr>
+      <tr><td class="dd-k">D1 平均</td><td class="dd-v">${_ddFmtPct(pos.d1_mean_pct)}</td><td class="dd-v">${_ddFmtPct(neg.d1_mean_pct)}</td></tr>
+      <tr><td class="dd-k">D1 勝率</td><td class="dd-v">${_ddFmtPct(pos.d1_win_rate)}</td><td class="dd-v">${_ddFmtPct(neg.d1_win_rate)}</td></tr>
+      <tr><td class="dd-k">D5 平均</td><td class="dd-v">${_ddFmtPct(pos.d5_mean_pct)}</td><td class="dd-v">${_ddFmtPct(neg.d5_mean_pct)}</td></tr>
+      <tr><td class="dd-k">D5 勝率</td><td class="dd-v">${_ddFmtPct(pos.d5_win_rate)}</td><td class="dd-v">${_ddFmtPct(neg.d5_win_rate)}</td></tr>
+      <tr><td class="dd-k">D10 平均</td><td class="dd-v">${_ddFmtPct(pos.d10_mean_pct)}</td><td class="dd-v">${_ddFmtPct(neg.d10_mean_pct)}</td></tr>
+      <tr><td class="dd-k">D10 勝率</td><td class="dd-v">${_ddFmtPct(pos.d10_win_rate)}</td><td class="dd-v">${_ddFmtPct(neg.d10_win_rate)}</td></tr>
+    </table>
+  </div>`;
+
+  const valBlock = blk('估值錨', [
+    ['PE',            _ddFmt(val.pe), ''],
+    ['Forward PE',    _ddFmt(val.forward_pe), ''],
+    ['營收成長(YoY)', val.revenue_growth_yoy != null ? _ddFmtPct(val.revenue_growth_yoy * 100) : '—', ''],
+    ['目標低',        _ddFmt(val.target_low), ''],
+    ['目標中位',      _ddFmt(val.target_median), ''],
+    ['目標均值',      _ddFmt(val.target_mean), ''],
+    ['目標高',        _ddFmt(val.target_high), ''],
+    ['分析師數',      val.n_analysts ?? '—', ''],
+    ['評級',          val.recommendation_key ?? '—', ''],
+    ['上行空間(中位)', _ddFmtPct(val.upside_to_median_pct), 'target_median / close − 1'],
+    ['下次財報',      val.next_earnings_date ?? '—', ''],
+  ]);
+
+  const refBlock = blk('參考位（確定性計算，非預測）', [
+    ['止損位',  _ddFmt(ref.stop_loss),
+                ref.stop_loss_basis || 'close − 2×ATR14'],
+    ['進場區間', entryZone ? `${_ddFmt(entryZone[0])} ~ ${_ddFmt(entryZone[1])}` : '—',
+                ref.entry_zone_basis || ''],
+    ['出場區間', exitZone ? `${_ddFmt(exitZone[0])} ~ ${_ddFmt(exitZone[1])}` : '—',
+                ref.exit_zone_basis || ''],
+  ]);
+
+  return `<div class="dd-numeric-grid">${techBlock}${evBlock}${valBlock}${refBlock}</div>`;
+}
+
+window.fpDdGenerateReport = function() {
+  const sym = _fpSelectedSym;
+  if (!sym) return;
+  const backend = ($('ddBackendSelect') || {value:'local'}).value;
+  const statusEl = $('ddReportStatus');
+  const narDiv = $('ddNarrative');
+  const btn = $('ddReportBtn');
+  if (statusEl) statusEl.textContent = '產生中...';
+  if (narDiv) { narDiv.style.display = 'none'; }
+  if (btn) btn.disabled = true;
+
+  apiFetch(`/api/deepdive/${encodeURIComponent(sym)}/report`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ backend }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (btn) btn.disabled = false;
+      if (data.error && !data.narrative) {
+        if (statusEl) statusEl.textContent = '錯誤：' + data.error;
+        return;
+      }
+      if (statusEl) statusEl.textContent = data.error ? ('（LLM 失敗：' + data.error + '）') : '完成';
+      if (narDiv && data.narrative) {
+        narDiv.textContent = data.narrative;
+        narDiv.style.display = '';
+      }
+      // 重新載入歷史
+      fpDdLoadHistory(sym);
+    })
+    .catch(e => {
+      if (btn) btn.disabled = false;
+      if (statusEl) statusEl.textContent = '失敗：' + e.message;
+    });
+};
+
+function fpDdLoadHistory(sym) {
+  const histWrap = $('ddHistoryWrap');
+  const histList = $('ddHistoryList');
+  if (!histWrap || !histList) return;
+  apiFetch(`/api/deepdive/${encodeURIComponent(sym)}/reports`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      const reps = (data && data.reports) || [];
+      if (!reps.length) { histWrap.style.display = 'none'; return; }
+      histList.innerHTML = reps.map(r =>
+        `<div class="dd-hist-row">
+          <span class="dd-hist-date">${escapeHtml((r.created_at || '').slice(0, 10))}</span>
+          <span class="dd-hist-backend">${escapeHtml(r.backend || '—')}</span>
+          <span class="dd-hist-price">收 ${_ddFmt(r.close)}</span>
+          <span class="dd-hist-ref">止損 ${_ddFmt(r.stop_loss)}｜進場 ${_ddFmt(r.entry_lo)}~${_ddFmt(r.entry_hi)}｜出場 ${_ddFmt(r.exit_lo)}~${_ddFmt(r.exit_hi)}</span>
+        </div>`
+      ).join('');
+      histWrap.style.display = '';
+    })
+    .catch(() => { histWrap.style.display = 'none'; });
 }
 
 // ── 聊天室 dock：把主儀表板的 .chat-panel 節點搬進/搬回 ─────────────────────

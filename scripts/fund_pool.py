@@ -31,6 +31,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import agent_arena as arena
 
@@ -587,6 +589,21 @@ def run_consult(
             )
         memory_fragment = "\n## 歷史會診記憶（同 symbol，最近 K 次）\n" + "\n".join(parts) + "\n"
 
+    # d-R5: 取得個股技術結構摘要（deep_dive_payload → 文字塊；失敗不阻擋會診）
+    technical_fragment = ""
+    if symbol:
+        try:
+            from serenity.services.deep_dive import (
+                deep_dive_payload as _dd_payload,
+                technical_summary_text as _dd_text,
+            )
+            _dd = _dd_payload(con, symbol, as_of=as_of)
+            technical_fragment = _dd_text(_dd)
+            if technical_fragment:
+                technical_fragment = "\n" + technical_fragment + "\n"
+        except Exception:
+            technical_fragment = ""
+
     # 意見輪
     opinions: list[dict] = []
     for agent_id in participants:
@@ -613,6 +630,7 @@ def run_consult(
             f"## 議題\n{question}\n\n"
             f"## 標的\n{symbol}\n\n"
             f"## 市場簡報（{as_of}）\n{briefing}\n"
+            + technical_fragment
             + personal_fragment
             + memory_fragment
         )

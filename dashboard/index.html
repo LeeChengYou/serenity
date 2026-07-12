@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool4" />
+  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool5" />
 </head>
 <body>
   <main class="shell">
@@ -173,6 +173,7 @@
               <button class="fp-detail-tab" data-dtab="news" onclick="fpSwitchDetailTab('news')">新聞摘要</button>
               <button class="fp-detail-tab" data-dtab="dossier" onclick="fpSwitchDetailTab('dossier')">AI 檔案</button>
               <button class="fp-detail-tab" data-dtab="experts" onclick="fpSwitchDetailTab('experts')">專家觀點</button>
+              <button class="fp-detail-tab" data-dtab="deepdive" onclick="fpSwitchDetailTab('deepdive')">深度研究</button>
             </div>
             <!-- 各頁籤內容 -->
             <div class="fp-detail-pane" id="fpDtabChart">
@@ -182,6 +183,28 @@
             <div class="fp-detail-pane" id="fpDtabNews" style="display:none;"></div>
             <div class="fp-detail-pane" id="fpDtabDossier" style="display:none;"></div>
             <div class="fp-detail-pane" id="fpDtabExperts" style="display:none;"></div>
+            <!-- d-R4 深度研究 tab -->
+            <div class="fp-detail-pane" id="fpDtabDeepdive" style="display:none;">
+              <div id="fpDdNumeric" class="dd-numeric-wrap">
+                <p class="fp-detail-loading">載入中...</p>
+              </div>
+              <!-- AI 解讀控制列 -->
+              <div class="dd-report-controls" style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select id="ddBackendSelect" class="dd-backend-select">
+                  <option value="local">本地 Ollama</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+                <button id="ddReportBtn" class="dd-report-btn" onclick="fpDdGenerateReport()">產生 AI 解讀</button>
+                <span id="ddReportStatus" style="font-size:12px;color:var(--muted);"></span>
+              </div>
+              <!-- Narrative 顯示 -->
+              <div id="ddNarrative" class="dd-narrative" style="display:none;"></div>
+              <!-- 歷史報告列表 -->
+              <div id="ddHistoryWrap" style="margin-top:16px;display:none;">
+                <h4 style="font-size:13px;color:var(--muted);margin-bottom:6px;">歷史報告</h4>
+                <div id="ddHistoryList"></div>
+              </div>
+            </div>
           </div>
 
           <!-- 建池表單 -->
@@ -563,7 +586,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/app.js?v=20260712-fundpool4"></script>
+  <script src="/app.js?v=20260712-fundpool5"></script>
   <script>
     // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
     if ('serviceWorker' in navigator) {

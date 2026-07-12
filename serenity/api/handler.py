@@ -44,6 +44,17 @@ from ..services.pool_views import (
     pool_list_payload, pool_detail_payload, pool_consults_payload,
     market_board_payload,
 )
+from ..services.deep_dive import deep_dive_payload, deep_dive_report, migrate as _dd_migrate
+
+# d-R3: 確保 deep_dive_reports 表存在（冪等，首次呼叫時跑）
+_dd_migrated = False
+
+
+def _ensure_dd_migrate(con) -> None:
+    global _dd_migrated
+    if not _dd_migrated:
+        _dd_migrate(con)
+        _dd_migrated = True
 
 
 class _BadRequest(Exception):
@@ -282,6 +293,21 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/arena/reflections":
                 month = (query.get("month") or [datetime.now().strftime("%Y-%m")])[0]
                 return arena_reflections_payload(con, month)
+            # d-R3: deep dive GET routes
+            if path.startswith("/api/deepdive/") and not path.endswith("/reports"):
+                symbol = unquote(path[len("/api/deepdive/"):]).upper().split("/")[0]
+                _ensure_dd_migrate(con)
+                return deep_dive_payload(con, symbol)
+            if path.startswith("/api/deepdive/") and path.endswith("/reports"):
+                symbol = unquote(path[len("/api/deepdive/"):-len("/reports")]).upper()
+                _ensure_dd_migrate(con)
+                rows = [dict(r) for r in con.execute(
+                    "SELECT id, symbol, as_of, close, entry_lo, entry_hi, exit_lo, exit_hi, "
+                    "stop_loss, backend, created_at, outcome_7d "
+                    "FROM deep_dive_reports WHERE symbol=? ORDER BY created_at DESC LIMIT 20",
+                    (symbol,),
+                ).fetchall()]
+                return {"symbol": symbol, "reports": rows}
             # 資金池 GET 路由
             if path == "/api/pools":
                 return pool_list_payload(con)
@@ -365,6 +391,23 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith("/api/scorecard/generate/"):
             symbol = unquote(path.rsplit("/", 1)[-1]).upper().strip()
             return generate_scorecard(symbol)
+        # d-R3: POST /api/deepdive/{symbol}/report
+        if path.startswith("/api/deepdive/") and path.endswith("/report"):
+            symbol = unquote(path[len("/api/deepdive/"):-len("/report")]).upper()
+            backend_name = (payload.get("backend") or "local").lower()
+            if backend_name not in ("local", "gemini"):
+                raise _HTTPResponse(
+                    {"error": f"backend 不合法：{backend_name!r}（合法值：'local'、'gemini'）"},
+                    400,
+                )
+            if not DB_PATH.exists():
+                return {"error": f"database not found: {DB_PATH}"}
+            con = db()
+            try:
+                _ensure_dd_migrate(con)
+                return deep_dive_report(con, symbol, backend=backend_name)
+            finally:
+                con.close()
         # 資金池 POST 路由
         if path == "/api/pools":
             # 建池：name, initial_cash

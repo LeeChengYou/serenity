@@ -1197,3 +1197,86 @@ body.fundpool-wide .shell {
     min-height: 400px;
   }
 }
+
+/* ── 深度研究 tab（d-R4）─────────────────────────────────────────────────── */
+.dd-numeric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 8px 0;
+}
+@media (max-width: 900px) {
+  .dd-numeric-grid { grid-template-columns: 1fr; }
+}
+.dd-block {
+  background: rgba(255,248,228,.5);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.dd-block-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+.dd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.dd-table td, .dd-table th {
+  padding: 2px 4px;
+  text-align: left;
+}
+.dd-k { color: var(--muted); width: 38%; }
+.dd-v { font-family: ui-monospace, monospace; color: var(--ink); }
+.dd-basis { font-size: 11px; color: var(--muted); font-style: italic; }
+.dd-insuf-warn {
+  font-size: 11px;
+  color: #b35900;
+  font-weight: 600;
+  margin-left: 6px;
+}
+.dd-report-controls { margin-top: 10px; }
+.dd-backend-select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  font-size: 13px;
+}
+.dd-report-btn {
+  padding: 5px 14px;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.dd-report-btn:disabled { opacity: .5; cursor: default; }
+.dd-narrative {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(255,248,228,.7);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.dd-hist-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.dd-hist-date { color: var(--muted); min-width: 80px; }
+.dd-hist-backend { color: var(--ink); font-weight: 600; }
+.dd-hist-price { font-family: ui-monospace, monospace; }
+.dd-hist-ref { color: var(--muted); font-size: 11px; }
