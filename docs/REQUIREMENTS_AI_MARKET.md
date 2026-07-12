@@ -233,5 +233,70 @@ narrative + 歷史報告列表。快取升版 `20260712-fundpool5` / `serenity-v
    py_compile;node --check。
 
 ---
+
+## (d-2) 深度研究 outcome_7d 回填【2026-07-12 定稿】
+
+現況:`deep_dive_reports.outcome_7d` 欄已建、API 已回傳,但無人回填、UI 不顯示。
+語義與 `fund_pool.backfill_outcomes`(pool_consults)完全一致。
+
+### d2-R1 `serenity/services/deep_dive.py::backfill_report_outcomes(con) -> int`
+- 對 `outcome_7d IS NULL` 的每列:基準 close = 該列已存的 `close`
+  (為 NULL 時 fallback 到 prices 中該 symbol `date <= as_of` 最近 close;仍缺 → 跳過)。
+- 取 prices 中該 symbol `date > as_of` 升冪前 7 列;**滿 7 個交易日**才回填
+  `outcome_7d = 第7交易日close / 基準close − 1`;不足 → 維持 NULL(誠實,下次再試)。
+- 冪等(只挑 NULL 列);回傳本次填入筆數。
+
+### d2-R2 接線與 UI
+- `scripts/fund_pool.py` 的 `daily` 指令在 backfill_outcomes 後加呼
+  `deep_dive.backfill_report_outcomes(con)` 並印筆數(一個 daily 指令管兩種回填)。
+- `dashboard/app.js` 深度研究歷史報告列加「7日後」欄:有值 → `+x.xx%`
+  (正綠負紅,比照既有漲跌樣式);NULL → `未滿7日`。
+- 快取升版:index.html 兩處 `?v=20260712-fundpool7`、sw.js `serenity-v8-outcome`。
+
+### d2-驗收(併入 scratch/test_deep_dive.py;tempfile DB 副本)
+1. 構造舊報告列(as_of 之後 prices ≥7 交易日)→ 回填值 = 測試內獨立重算(1e-6 相對)。
+2. 不足 7 交易日的列維持 NULL;close 與 prices 皆缺基準 → 維持 NULL 不拋例外。
+3. 冪等:跑兩次,值不變、第二次回傳 0。
+4. fund_pool daily 指令路徑會呼叫到(monkeypatch 計數即可)。
+
+## (b-2) 本地 LLM 接管競技場日常決策【2026-07-12 定稿】
+
+### b2-R1 `scripts/agent_arena.py::LocalBackend(AgentBackend)`
+- **系統 prompt 與 GeminiBackend 完全共用**:把 decide/reflect 的 system 字串抽成
+  模組層常數 `_DECIDE_SYSTEM`/`_REFLECT_SYSTEM`,兩個 backend 共用(防規則分岔)。
+- `__init__`:`is_local_llm_up()` False → raise RuntimeError(zh-TW,含
+  「本地模型未啟動」)——與 GeminiBackend 缺 key 同語義,fail fast。
+- `decide`:`call_local_llm(...)`(temperature=0.3)→ 剝 markdown 圍欄
+  (```json …```)→ `json.loads`;任何失敗 → 印錯誤並回
+  `{"actions":[],"watch":[],"memory_note":"","backend_error":True}`(與 Gemini 路徑同,
+  arena 不因單一 agent 失敗中斷)。`<think>` 已由 call_local_llm 剝除。
+- `reflect`:同模式;失敗回 `{"public_letter":"","reflection_md":"","strategy_md":""}`。
+- 圍欄剝除做成小 helper `_strip_md_fence(text)`(decide/reflect 共用)。
+
+### b2-R2 backend 指派(每任務類別)
+- `cmd_daily`/`cmd_monthly` 加 `--backend {gemini,local}`;優先序:
+  `--dry-run`(Stub)> `--backend` 旗標 > settings 鍵 `arena_backend` > 預設 `gemini`。
+- 解析邏輯抽成 `_resolve_backend_name(flag_value) -> str`(讀
+  `serenity.config.get_setting("arena_backend")`;可單測)。
+- 非法值 → 印錯誤 exit 1,不靜默 fallback。
+
+### b2-驗收(新檔 scratch/test_arena_local.py;假 HTTP server 比照 test_local_llm.py)
+1. decide:假 server 回合法 JSON → 解析出 actions;回 ```json 圍欄 → 仍解析成功;
+   回含 `<think>` 前綴 → 剝除後解析成功。
+2. decide:畸形 JSON → backend_error=True 不拋例外;reflect 同(失敗回三空欄)。
+3. 假 server 未啟動 → `LocalBackend()` raise RuntimeError 含「本地模型未啟動」。
+4. `_resolve_backend_name`:旗標 > settings > 預設;非法值 raise/擋下。
+5. run_daily 端到端(tempfile DB 副本 + 假 server 回一筆合法 BUY)→
+   agent_orders/trades 有 pending 單、NAV 有列(LocalBackend 全流程可跑)。
+6. 迴歸:test_arena_final 70、test_deep_dive(含 d2 新案例)、fund_pool 147、
+   chat_market 18、local_llm 16、tw_phase1 29 全綠;py_compile;node --check。
+7. 真機冒煙(merge 後由監督者執行):**複製真 DB 到 tempfile**,對單一 agent 跑
+   run_daily(LocalBackend + 真 qwen3:14b)→ 決策 JSON 解析成功、單有落庫;
+   不直接動生產 DB(當日 Gemini daily 可能已跑過,避免重複下單)。
+
+範圍外(之後再議):批次情緒/翻譯切本地、deep dive 報告記憶注入 consult。
+
+---
 Changelog:
 - 2026-07-12 初版;(a) 詳細規格,(b)(c) 路線圖。
+- 2026-07-12 追加 (d-2) outcome 回填、(b-2) 本地 LLM 接管競技場 詳細規格。
