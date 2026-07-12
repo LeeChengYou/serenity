@@ -699,16 +699,16 @@ def _resolve_backend_name(flag_value: str | None) -> str:
         if flag_value not in _valid:
             raise ValueError(f"非法 backend 值：{flag_value!r}（合法：gemini、local）")
         return flag_value
-    # 從 settings 讀
+    # 從 settings 讀（只吞讀取失敗，不吞非法值——非法值必須讓呼叫端 exit 1）
     try:
         from serenity.config import get_setting
         val = get_setting("arena_backend")
-        if val:
-            if val not in _valid:
-                raise ValueError(f"settings arena_backend 非法值：{val!r}（合法：gemini、local）")
-            return val
     except Exception:
-        pass
+        val = None
+    if val:
+        if val not in _valid:
+            raise ValueError(f"settings arena_backend 非法值：{val!r}（合法：gemini、local）")
+        return val
     return "gemini"
 
 

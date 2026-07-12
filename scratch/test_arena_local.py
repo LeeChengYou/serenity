@@ -244,6 +244,16 @@ def main():
         raised_invalid = True
     check("b2-4：非法值 → raise", raised_invalid)
 
+    # settings 路徑的非法值也必須 raise（不准靜默 fallback 到 gemini）
+    os.environ["ARENA_BACKEND"] = "bogus"
+    raised_settings_invalid = False
+    try:
+        rb(None)
+    except (ValueError, SystemExit):
+        raised_settings_invalid = True
+    os.environ.pop("ARENA_BACKEND", None)
+    check("b2-4：settings 非法值 → raise（不靜默 fallback）", raised_settings_invalid)
+
     # ── b2-驗收 5：run_daily 端到端（tempfile DB + 假 server 回一筆合法 BUY）─
     print("\n[b2-5] run_daily 端到端（LocalBackend + tempfile DB）")
 
