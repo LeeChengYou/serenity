@@ -107,15 +107,54 @@ is_local_llm_up(base_url=None) -> bool   # GET {base}/api/tags,1 秒逾時
 7. py_compile 全部改動檔;真機冒煙(使用者裝好 Ollama 後):聊天選「本地」
    問一題,回覆引用快照數據。
 
-## (c) 台股支援 Phase 1【路線圖】
+## (c) 台股支援 Phase 1【詳細規格,2026-07-12 定稿】
 
-- 範圍:台股代號(`2330.TW`/`.TWO`)進 prices ingest、行情看盤板、觀察清單、
-  個股詳情走勢圖。**不含**:訊號評分/情緒(X cashtag 無台股討論,Phase 2 接
-  中文資料源)、資金池台股下單(幣別問題,Phase 3 決定獨立 TWD 池或匯率換算)。
-- 改動面:ingest 的 symbol 宇宙加 region 欄;yfinance 抓 `.TW` 日線(注意時區
-  與交易日曆);行情板 region 篩選鈕(美股/台股);詳情頁籤對台股隱藏無資料的
-  訊號/新聞 tab(誠實顯示「台股尚未支援此分析」)。
-- Phase 2:台股新聞/PTT 討論源 + 中文情緒;Phase 3:資金池多幣別。
+現況盤點(已查證):價格來源是 Yahoo v8 chart API(`ingest.yahoo_chart`),
+**原生支援 `.TW`/`.TWO`**;watchlist 內的代號本來就會進 `symbol_list` →
+`fetch_prices` 抓價。Phase 1 = 打通入口 + 地區標示 + 誠實邊界。
+
+### c-R1 入口:watchlist 收台股代號
+- `serenity/services/watchlist.py` 的 `_SYM_RE` 改為 `^[A-Za-z0-9.\-]{1,12}$`
+  (現況不允許數字,2330.TW 會被擋)。
+- `scripts/ingest.py` **新增** `fetch_prices_for_symbol(con, symbol, days_back=420)`:
+  單一代號版抓價(重用 `yahoo_chart` 與既有 upsert 邏輯);watchlist.py 的
+  背景補抓已在呼叫此函式名(現在 AttributeError 靜默略過 → 修好後真正生效)。
+- 行情看盤板加「＋新增代號」輸入框:POST /api/watchlist {add} →
+  提示「已加入,價格抓取中,約 1 分鐘後重新整理」。
+
+### c-R2 地區標示與篩選
+- `region(symbol)` 規則:`.TW`/`.TWO` 結尾 → `tw`,其餘 → `us`
+  (共用工具函式,放 serenity/services/pool_views.py 或獨立小模組)。
+- `market_board_payload` rows 加 `region` 欄。
+- 行情板加地區篩選鈕:全部 / 🇺🇸 美股 / 🇹🇼 台股(樣式比照「只看觀察清單」)。
+- 台股列價格顯示 `NT$` 前綴(美股維持 `$`);個股詳情標題同理。
+
+### c-R3 誠實邊界(Phase 1 明確不做的,要擋好)
+- **資金池下單**:`place_order` 對 region='tw' 的 symbol 拒單,
+  rejected_reason=「台股暫不支援下單(TWD 幣別,Phase 3)」——USD 池混 TWD
+  價格會汙染 NAV,必須硬擋。會診(read-only)不擋。
+- 深度研究:technical 對台股自然可用(有價就能算);events/valuation 會缺 →
+  既有「—/尚無資料」語義已誠實,不需特殊處理。
+- 聊天代號偵測:`chat.py` 的 db_symbols 從 mentions 擴為 mentions ∪ prices
+  (台股無 X 提及,但有價格就該能被問)。
+
+### c-驗收(scratch/test_tw_phase1.py;tempfile DB 副本;不打真 Yahoo——
+fetch_prices_for_symbol 的網路呼叫用 monkeypatch 假 yahoo_chart)
+1. `_SYM_RE`:2330.TW / 6488.TWO 過,`$;DROP` / 超長不過;既有美股代號仍過。
+2. `region()`:2330.TW→tw、6488.TWO→tw、NVDA→us、BRK.B→us(`.B` 不是台股)。
+3. `fetch_prices_for_symbol`(假 yahoo_chart 回 3 根日線)→ prices 表 3 列,
+   重跑冪等(upsert 不重複)。
+4. `market_board_payload`:在 DB 副本插入台股假價格列 → rows 含 region='tw'
+   該列,美股列 region='us'。
+5. `place_order` BUY 2330.TW → rejected,reason 含「台股」;美股單不受影響。
+6. chat 代號偵測:prices 有 2330.TW(mentions 無)時,`handle_chat_api` 的
+   context 建構能抓到該代號(測 db_symbols 來源擴充;不打 LLM)。
+7. 既有五套測試(deep_dive 58、fund_pool 147、arena 70、chat_market 18、
+   local_llm 16)不受影響;py_compile;node --check。
+8. 真機冒煙(merge 後由監督者執行):加 2330.TW 進 watchlist → 實抓價格 →
+   行情板出現台股列(NT$、region 篩選有效)→ 深度研究 technical 有數字。
+
+Phase 2(路線圖):台股新聞/PTT 討論源 + 中文情緒;Phase 3:資金池 TWD 池或匯率換算。
 
 ---
 
