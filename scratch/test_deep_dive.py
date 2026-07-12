@@ -225,7 +225,7 @@ def main():
     try:
         from serenity.services.deep_dive import (
             deep_dive_payload, deep_dive_report, migrate,
-            technical_summary_text,
+            technical_summary_text, backfill_report_outcomes,
         )
     except Exception as exc:
         check("import deep_dive", False, repr(exc))
@@ -636,6 +636,181 @@ def main():
         check("T7.run_consult OK", False, repr(exc))
 
     con.close()
+
+    # ── Test d2: backfill_report_outcomes ─────────────────────────────────
+    print("\n[d2] backfill_report_outcomes — outcome_7d 回填")
+
+    # 用全新 tempfile DB（不依賴真 DB 的 NVDA 資料）
+    d2_tmpdir = Path(tempfile.mkdtemp(prefix="dd_d2_test_"))
+    d2_db = d2_tmpdir / "test.sqlite"
+    d2_con = sqlite3.connect(str(d2_db))
+    d2_con.row_factory = sqlite3.Row
+    d2_con.execute("PRAGMA journal_mode=WAL")
+
+    # 建立最小 schema
+    d2_con.executescript("""
+        CREATE TABLE IF NOT EXISTS prices (
+            symbol TEXT, date TEXT, open REAL, high REAL, low REAL,
+            close REAL, volume REAL,
+            UNIQUE(symbol, date)
+        );
+        CREATE TABLE IF NOT EXISTS deep_dive_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL, as_of TEXT NOT NULL,
+            close REAL, entry_lo REAL, entry_hi REAL,
+            exit_lo REAL, exit_hi REAL, stop_loss REAL,
+            narrative TEXT, backend TEXT NOT NULL DEFAULT 'local',
+            created_at TEXT NOT NULL, outcome_7d REAL
+        );
+    """)
+    d2_con.commit()
+
+    SYM_D2 = "TSYM"
+    AS_OF_D2 = "2026-01-10"
+    BASE_CLOSE = 100.0
+
+    # 插入 8 個交易日（as_of + 7 個之後）
+    trading_days_d2 = [
+        ("2026-01-10", 100.0),
+        ("2026-01-11", 101.0),
+        ("2026-01-12", 102.0),
+        ("2026-01-13", 103.0),
+        ("2026-01-14", 104.0),
+        ("2026-01-15", 105.0),
+        ("2026-01-16", 106.0),
+        ("2026-01-17", 107.0),  # 第 7 交易日 after as_of
+    ]
+    for d, c in trading_days_d2:
+        d2_con.execute(
+            "INSERT OR IGNORE INTO prices (symbol, date, close) VALUES (?, ?, ?)",
+            (SYM_D2, d, c),
+        )
+    d2_con.commit()
+
+    # 插入一筆舊報告（as_of=2026-01-10，close=100.0，outcome_7d=NULL）
+    d2_con.execute(
+        """INSERT INTO deep_dive_reports
+           (symbol, as_of, close, backend, created_at, outcome_7d)
+           VALUES (?, ?, ?, 'local', '2026-01-10T00:00:00', NULL)""",
+        (SYM_D2, AS_OF_D2, BASE_CLOSE),
+    )
+    d2_con.commit()
+
+    # d2-驗收 1：回填值 = 獨立重算（第 7 交易日 close / 基準 close − 1）
+    # 第 7 交易日 after as_of = 2026-01-17，close=107.0
+    exp_outcome = 107.0 / BASE_CLOSE - 1.0
+    filled_count = backfill_report_outcomes(d2_con)
+    check("d2-驗收1：回填筆數=1", filled_count == 1, f"got={filled_count}")
+    row_d2 = d2_con.execute(
+        "SELECT outcome_7d FROM deep_dive_reports WHERE symbol=?", (SYM_D2,)
+    ).fetchone()
+    check("d2-驗收1：outcome_7d 非 NULL", row_d2 and row_d2["outcome_7d"] is not None)
+    if row_d2 and row_d2["outcome_7d"] is not None:
+        check("d2-驗收1：outcome_7d 值正確（rel 1e-6）",
+              approx(row_d2["outcome_7d"], exp_outcome),
+              f"got={row_d2['outcome_7d']} exp={exp_outcome}")
+
+    # d2-驗收 2a：不足 7 交易日的列維持 NULL
+    SYM_D2B = "TSYM2"
+    AS_OF_D2B = "2026-01-15"
+    d2_con.execute(
+        "INSERT OR IGNORE INTO prices (symbol, date, close) VALUES (?, ?, ?)",
+        (SYM_D2B, "2026-01-15", 50.0),
+    )
+    d2_con.execute(
+        "INSERT OR IGNORE INTO prices (symbol, date, close) VALUES (?, ?, ?)",
+        (SYM_D2B, "2026-01-16", 51.0),  # 只有 1 日，不足 7
+    )
+    d2_con.execute(
+        """INSERT INTO deep_dive_reports
+           (symbol, as_of, close, backend, created_at, outcome_7d)
+           VALUES (?, ?, 50.0, 'local', '2026-01-15T00:00:00', NULL)""",
+        (SYM_D2B, AS_OF_D2B),
+    )
+    d2_con.commit()
+    backfill_report_outcomes(d2_con)
+    row_d2b = d2_con.execute(
+        "SELECT outcome_7d FROM deep_dive_reports WHERE symbol=?", (SYM_D2B,)
+    ).fetchone()
+    check("d2-驗收2a：不足7日 → outcome_7d 維持 NULL",
+          row_d2b and row_d2b["outcome_7d"] is None)
+
+    # d2-驗收 2b：close 與 prices 皆缺基準 → 維持 NULL 不拋例外
+    SYM_D2C = "TSYM3"
+    AS_OF_D2C = "2026-01-10"
+    try:
+        d2_con.execute(
+            """INSERT INTO deep_dive_reports
+               (symbol, as_of, close, backend, created_at, outcome_7d)
+               VALUES (?, ?, NULL, 'local', '2026-01-10T00:00:00', NULL)""",
+            (SYM_D2C, AS_OF_D2C),
+        )
+        d2_con.commit()
+        backfill_report_outcomes(d2_con)
+        row_d2c = d2_con.execute(
+            "SELECT outcome_7d FROM deep_dive_reports WHERE symbol=?", (SYM_D2C,)
+        ).fetchone()
+        check("d2-驗收2b：close/prices 皆缺 → NULL 不拋例外",
+              row_d2c and row_d2c["outcome_7d"] is None)
+    except Exception as exc:
+        check("d2-驗收2b：不拋例外", False, repr(exc))
+
+    # d2-驗收 3：冪等（跑兩次，第二次回傳 0）
+    filled2 = backfill_report_outcomes(d2_con)
+    check("d2-驗收3：冪等第二次回傳 0", filled2 == 0, f"got={filled2}")
+    row_d2_again = d2_con.execute(
+        "SELECT outcome_7d FROM deep_dive_reports WHERE symbol=?", (SYM_D2,)
+    ).fetchone()
+    check("d2-驗收3：值不變",
+          row_d2_again and approx(row_d2_again["outcome_7d"], exp_outcome))
+
+    # d2-驗收 4：fund_pool daily 路徑會呼叫到（monkeypatch 計數）
+    import fund_pool as fp
+    calls = []
+    _orig_bro = None
+    try:
+        import serenity.services.deep_dive as _dd_mod
+        _orig_bro = _dd_mod.backfill_report_outcomes
+        _dd_mod.backfill_report_outcomes = lambda con: calls.append(1) or 0
+
+        # 模擬 cmd_daily 的 deep_dive 呼叫路徑
+        # fund_pool.cmd_daily 用 importlib 動態 import，我們直接驗底層匯入路徑
+        # 建立 tempfile DB 副本執行 cmd_daily
+        import argparse as _ap
+        d2_fp_db = d2_tmpdir / "fp_test.sqlite"
+        d2_fp_con = sqlite3.connect(str(d2_fp_db))
+        d2_fp_con.row_factory = sqlite3.Row
+        import agent_arena as _aa
+        _aa.migrate(d2_fp_con)
+        fp.migrate(d2_fp_con)
+        # 確保 prices 表存在並有一筆資料（agent_arena.migrate 不建 prices）
+        d2_fp_con.executescript("""
+            CREATE TABLE IF NOT EXISTS prices (
+                symbol TEXT, date TEXT, open REAL, high REAL, low REAL,
+                close REAL, volume REAL, UNIQUE(symbol, date)
+            );
+        """)
+        d2_fp_con.execute(
+            "INSERT OR IGNORE INTO prices (symbol, date, close) VALUES ('AAPL','2026-01-10',150.0)"
+        )
+        d2_fp_con.commit()
+
+        _fp_args = _ap.Namespace(db=str(d2_fp_db))
+        fp.cmd_daily(_fp_args)
+        check("d2-驗收4：fund_pool daily 路徑呼叫 backfill_report_outcomes", len(calls) == 1,
+              f"calls={calls}")
+    except Exception as exc:
+        check("d2-驗收4：monkeypatch 執行", False, repr(exc))
+    finally:
+        if _orig_bro is not None:
+            import serenity.services.deep_dive as _dd_mod2
+            _dd_mod2.backfill_report_outcomes = _orig_bro
+
+    d2_con.close()
+    try:
+        d2_fp_con.close()
+    except Exception:
+        pass
 
     finish()
 

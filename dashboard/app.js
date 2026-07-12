@@ -3412,14 +3412,18 @@ function fpDdLoadHistory(sym) {
     .then(data => {
       const reps = (data && data.reports) || [];
       if (!reps.length) { histWrap.style.display = 'none'; return; }
-      histList.innerHTML = reps.map(r =>
-        `<div class="dd-hist-row">
+      histList.innerHTML = reps.map(r => {
+        const o7d = r.outcome_7d != null
+          ? `<span class="dd-hist-outcome ${r.outcome_7d >= 0 ? 'up' : 'dn'}">${r.outcome_7d >= 0 ? '+' : ''}${(r.outcome_7d * 100).toFixed(2)}%</span>`
+          : `<span class="dd-hist-outcome">未滿7日</span>`;
+        return `<div class="dd-hist-row">
           <span class="dd-hist-date">${escapeHtml((r.created_at || '').slice(0, 10))}</span>
           <span class="dd-hist-backend">${escapeHtml(r.backend || '—')}</span>
           <span class="dd-hist-price">收 ${_ddFmt(r.close)}</span>
           <span class="dd-hist-ref">止損 ${_ddFmt(r.stop_loss)}｜進場 ${_ddFmt(r.entry_lo)}~${_ddFmt(r.entry_hi)}｜出場 ${_ddFmt(r.exit_lo)}~${_ddFmt(r.exit_hi)}</span>
-        </div>`
-      ).join('');
+          <span class="dd-hist-label">7日後：</span>${o7d}
+        </div>`;
+      }).join('');
       histWrap.style.display = '';
     })
     .catch(() => { histWrap.style.display = 'none'; });

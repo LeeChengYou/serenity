@@ -776,6 +776,15 @@ def cmd_daily(args):
     row = con.execute("SELECT MAX(date) FROM prices").fetchone()
     as_of = row[0] if row and row[0] else datetime.utcnow().strftime("%Y-%m-%d")
     backfill_outcomes(con, as_of)
+
+    # d-2：回填 deep_dive_reports.outcome_7d
+    try:
+        from serenity.services import deep_dive as _dd
+        dd_filled = _dd.backfill_report_outcomes(con)
+        print(f"[deep_dive] backfill_report_outcomes: {dd_filled} 筆")
+    except Exception as exc:
+        print(f"[deep_dive] backfill_report_outcomes 失敗（略過）: {exc}")
+
     con.close()
     print(f"fund_pool daily {as_of} 完成（backfill_outcomes）。")
 
