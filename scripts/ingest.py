@@ -526,6 +526,9 @@ def score_tw_news_sentiment(con, backend: str = "local", limit: int = 50) -> int
         # 呼叫 LLM
         raw_text = None
         try:
+            # scripts/ 直接執行時 repo root 不在 sys.path，serenity 套件會 import 失敗
+            if str(ROOT) not in sys.path:
+                sys.path.insert(0, str(ROOT))
             if backend == "local":
                 from serenity.llm_local import call_local_llm
                 raw_text = call_local_llm(
