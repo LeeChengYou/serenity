@@ -118,5 +118,81 @@ is_local_llm_up(base_url=None) -> bool   # GET {base}/api/tags,1 秒逾時
 - Phase 2:台股新聞/PTT 討論源 + 中文情緒;Phase 3:資金池多幣別。
 
 ---
+
+## (d) 個股深度研究報告(deep dive)【2026-07-12 定稿,實作中】
+
+原則:**數字由 python 確定性計算,LLM 只做綜合解讀**(教訓:14B 模型會把
+1.47 億唸成 14.7 億)。所有價位可追溯到計算來源;報告永遠帶「模擬用途,
+非投資建議」;樣本不足如實標注(本 DB 每檔新聞事件日僅約 5-6 天)。
+
+### d-R1 `serenity/services/deep_dive.py::deep_dive_payload(con, symbol, as_of=None) -> dict`
+
+全部計算只用 `date <= as_of` 的資料(零 look-ahead);as_of 缺省 = 該 symbol
+prices 最大 date;無價格 → `{"error": ...}`。欄位與**精確算法**(驗收測試以此為準):
+
+- `technical`(最近 250 交易日;不足用可得的並回報 `n_days`):
+  - `rsi14`/`ema20`/`ema50`/`ema200`:**重用** `agent_arena._calc_rsi14`/`_calc_ema`(不足 → None)
+  - `atr14`:Wilder ATR。TR = max(high−low, |high−prev_close|, |low−prev_close|);
+    前 14 個有效 TR 簡單平均起始,之後 `(prev×13+TR)/14` 平滑;high/low 為 NULL 的日子跳過;有效 TR < 14 → None
+  - `ann_vol_pct`:最近 120 個日報酬(close/close−1)樣本標準差 × √252 × 100;不足 30 筆 → None
+  - `hi_60d`/`lo_60d`:最近 60 交易日 close 極值
+  - `support_levels`:最近 60 交易日 swing low(close 嚴格低於前後各 2 日)最近 3 個(由近到遠);`resistance_levels` 同理 swing high
+  - `max_drawdown_1y_pct`(250 日 close 最大回撤,正值)、`chg_20d_pct`
+- `events`(news_sentiment,`date(published_at) <= as_of`):
+  日聚合 bull/bear 筆數;**正面事件日 = bull≥2 且 bull>bear;負面 = bear>bull**。
+  事件基準 = 事件日或其後第一個交易日 close;`d1/d5/d10` = 第 1/5/10 交易日
+  close/基準 −1;僅統計 forward 窗完整(≤ as_of)的事件。
+  輸出 positive/negative 各 `{n, d1_mean_pct, d1_win_rate, d5_…, d10_…}`
+  (n=0 → 其餘 None)+ `insufficient`(正負合計 n<10 → true)。
+- `valuation`:fundamentals(pe/forward_pe/revenue_growth_yoy/next_earnings_date)
+  + analyst_estimates(target_low/median/mean/high、n_analysts、recommendation_key)
+  + `upside_to_median_pct` = target_median/close −1;任何缺值 → None,不捏造。
+- `reference_levels`(確定性參考位,非預測;每個附 `basis` 說明來源):
+  - `stop_loss` = close − 2×atr14
+  - `entry_zone` = [最近支撐位, 支撐位 + 0.5×atr14](支撐與 atr 缺一 → None)
+  - `exit_zone` = 最近壓力位與 target_median 可得者構成 [min, max];全缺 → None
+
+### d-R2 `deep_dive_report(con, symbol, backend='local', as_of=None) -> dict`
+
+numeric payload → LLM 綜合(`local` 走 call_local_llm / `gemini` 走 call_gemini)。
+prompt 強制:所有數字**預先由 python 格式化**成文字(2 位小數、億/萬單位);
+每個價位必須引用 payload 欄位;樣本不足如實說;結尾固定免責聲明。
+落庫 `deep_dive_reports(id, symbol, as_of, close, entry_lo, entry_hi, exit_lo,
+exit_hi, stop_loss, narrative, backend, created_at, outcome_7d)`(outcome
+回填屬 d-2,本輪只建欄)。LLM 失敗 → 回 numeric + error 欄(不 500)。
+
+### d-R3 API
+
+`GET /api/deepdive/{symbol}`(numeric)、`POST /api/deepdive/{symbol}/report`
+(body: backend,預設 local;非法 → 400)、`GET /api/deepdive/{symbol}/reports`。
+
+### d-R4 UI
+
+個股詳情加「深度研究」tab:進 tab 即載入 numeric 四區塊(技術結構/事件研究
+/估值錨/參考位,含 basis 與樣本數);「產生 AI 解讀」(下拉 本地/Gemini)→
+narrative + 歷史報告列表。快取升版 `20260712-fundpool5` / `serenity-v6-deepdive`。
+
+### d-R5 會診整合
+
+`run_consult` 意見輪 prompt 附該 symbol 的 technical + reference_levels
+精簡文字塊(由 deep_dive_payload 轉,python 預格式化)。
+
+### d-驗收(scratch/test_deep_dive.py;tempfile DB 副本;LLM 全用假 server/Stub)
+
+1. technical 每個數字與測試內**獨立重算**一致(ATR/年化波動/swing/回撤/20日%,
+   誤差 1e-6 相對);rsi/ema 與 agent_arena 函式輸出一致。
+2. events:以 SQL 重算事件日集合一致;抽 1 個事件驗 d5 報酬;forward 窗不完整
+   的事件被排除;正負合計 <10 → insufficient=true。
+3. valuation:與 fundamentals/analyst_estimates 原始列一致;缺值 → None。
+4. reference_levels:stop_loss = close−2×ATR;entry/exit zone 組成正確;
+   atr 缺 → 相關位 None;basis 非空。
+5. as_of 參數:指定過去日期 → 所有輸出只用該日(含)以前資料(抽 hi_60d 驗證)。
+6. deep_dive_report:假 LLM server 下 narrative 落庫、報告列完整;LLM 失敗 →
+   回 numeric+error 不拋例外;backend 非法 → API 400。
+7. 會診 prompt(StubConsultBackend.opine_prompts)含 technical 區塊標記。
+8. 既有全部測試(fund_pool 147、arena 70、chat_market 18、local_llm 16)不受影響;
+   py_compile;node --check。
+
+---
 Changelog:
 - 2026-07-12 初版;(a) 詳細規格,(b)(c) 路線圖。
