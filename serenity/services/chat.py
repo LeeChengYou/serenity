@@ -24,7 +24,8 @@ from .regime import regime_payload
 _MARKET_INTENT_KEYWORDS = [
     "市場", "大盤", "總覽", "類股", "板塊", "前景", "趨勢", "輪動", "環境",
     "宏觀", "整體", "盤勢", "多頭", "空頭", "行情",
-    "market", "outlook", "sector", "macro", "regime", "breadth",
+    "成交量", "漲幅", "跌幅", "漲最多", "跌最多", "排行", "排名", "熱度", "強勢", "弱勢",
+    "market", "outlook", "sector", "macro", "regime", "breadth", "volume", "movers",
 ]
 
 
