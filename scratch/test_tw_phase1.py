@@ -150,6 +150,10 @@ def test_fetch_prices_for_symbol():
 
     tmp_name, con = _make_temp_db()
     try:
+        # 生產 DB 可能已含真實 2330.TW 列（2026-07-12 冒煙後即如此）；
+        # 本案例前提是「該 symbol 尚無價格」，先在副本清掉
+        con.execute("DELETE FROM prices WHERE symbol='2330.TW'")
+        con.commit()
         with mock.patch.object(ingest, "yahoo_chart", side_effect=_fake_yahoo_chart):
             n = ingest.fetch_prices_for_symbol(con, "2330.TW", days_back=420)
         rows = con.execute(
