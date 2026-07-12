@@ -568,17 +568,19 @@ def deep_dive_report(
 
     as_of_val = payload["as_of"]
 
-    con.execute(
-        """
-        INSERT INTO deep_dive_reports
-            (symbol, as_of, close, entry_lo, entry_hi, exit_lo, exit_hi,
-             stop_loss, narrative, backend, created_at, outcome_7d)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        """,
-        (symbol, as_of_val, close, entry_lo, entry_hi,
-         exit_lo, exit_hi, stop_loss, narrative, backend, now_iso),
-    )
-    con.commit()
+    # LLM 失敗（narrative 為 None）→ 不落庫，避免累積空報告列
+    if narrative is not None:
+        con.execute(
+            """
+            INSERT INTO deep_dive_reports
+                (symbol, as_of, close, entry_lo, entry_hi, exit_lo, exit_hi,
+                 stop_loss, narrative, backend, created_at, outcome_7d)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (symbol, as_of_val, close, entry_lo, entry_hi,
+             exit_lo, exit_hi, stop_loss, narrative, backend, now_iso),
+        )
+        con.commit()
 
     result = dict(payload)
     if narrative is not None:

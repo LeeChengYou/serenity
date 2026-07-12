@@ -560,9 +560,20 @@ def main():
     check("T6.LLM fail has close key (numeric present)",
           result_fail.get("close") is not None)
 
+    # LLM 失敗 → 不落庫（不累積空 narrative 報告列）
+    n_before_fail = con.execute(
+        "SELECT COUNT(*) FROM deep_dive_reports WHERE narrative IS NULL"
+    ).fetchone()[0]
+    check("T6.LLM fail does NOT persist empty-narrative row",
+          n_before_fail == 0, f"null-narrative rows={n_before_fail}")
+
     # backend 非法 → 僅在 API 層 400（此處 deep_dive_report 返回 error 欄）
     result_bad = deep_dive_report(con, SYM, backend="badbackend", as_of=AS_OF)
     check("T6.bad backend returns error", "error" in result_bad)
+    n_after_bad = con.execute(
+        "SELECT COUNT(*) FROM deep_dive_reports WHERE narrative IS NULL"
+    ).fetchone()[0]
+    check("T6.bad backend does NOT persist row", n_after_bad == 0)
 
     # ── Test 7: 會診 prompt 含 technical 區塊標記 ────────────────────────
     print("\n[T7] 會診 prompt 含 technical 區塊標記（technical_summary_text + fund_pool）")
