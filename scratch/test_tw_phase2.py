@@ -488,8 +488,10 @@ def test_tw_events_integration():
         events = payload.get("events", {})
         pos = events.get("positive", {})
         check("f-5 events 不為 None", events is not None, str(type(events)))
-        check("f-5 positive n ≥ 0（串接生效，不拋例外）",
-              isinstance(pos.get("n", 0), int), str(pos))
+        # 事件日 2026-05-05（bull=2>bear=0）、價格連續到 05-30 → d10 窗完整，
+        # 一定會被計入正面事件；n>=1 才證明 zh-news-llm 列真的接進事件研究
+        check("f-5 positive 事件日 n >= 1（串接真的生效）",
+              isinstance(pos.get("n"), int) and pos.get("n") >= 1, str(pos))
 
     finally:
         con.close()

@@ -489,12 +489,14 @@ def score_tw_news_sentiment(con, backend: str = "local", limit: int = 50) -> int
     回傳本次標注筆數。
     """
     # 找待標注列（冪等：已有 zh-news-llm 的 url 不重標）
+    # 子查詢先過濾 json_valid：一列壞 JSON 不能讓 json_each 炸掉整個查詢
     rows = con.execute("""
         SELECT n.id, n.title, n.summary, n.published_at, n.url,
                json_each.value AS yahoo_sym
-        FROM news n, json_each(n.symbols)
-        WHERE n.scope = 'symbol'
-          AND (json_each.value LIKE '%.TW' OR json_each.value LIKE '%.TWO')
+        FROM (SELECT * FROM news
+              WHERE scope = 'symbol' AND json_valid(symbols)) n,
+             json_each(n.symbols)
+        WHERE (json_each.value LIKE '%.TW' OR json_each.value LIKE '%.TWO')
           AND NOT EXISTS (
               SELECT 1 FROM news_sentiment ns
               WHERE ns.url = n.url AND ns.source = 'zh-news-llm'
