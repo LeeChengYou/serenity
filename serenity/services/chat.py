@@ -15,6 +15,106 @@ from ..config import DB_PATH, ROOT, get_setting
 from ..db import db
 from ..gemini import call_gemini
 from ..keypool import _key_manager
+from .pool_views import market_board_payload
+from .regime import regime_payload
+
+
+# ── (a) 聊天市場總覽 context(規格:docs/REQUIREMENTS_AI_MARKET.md a-R1~a-R3)──
+
+_MARKET_INTENT_KEYWORDS = [
+    "市場", "大盤", "總覽", "類股", "板塊", "前景", "趨勢", "輪動", "環境",
+    "宏觀", "整體", "盤勢", "多頭", "空頭", "行情",
+    "market", "outlook", "sector", "macro", "regime", "breadth",
+]
+
+
+def _detect_market_intent(msg: str) -> bool:
+    """訊息含市場級關鍵字 → 注入進階版快照(a-R2)。"""
+    low = (msg or "").lower()
+    return any(kw in low for kw in _MARKET_INTENT_KEYWORDS)
+
+
+def build_market_overview(con, extended: bool = False) -> str:
+    """
+    市場總覽快照(a-R1)。零捏造:全部數字來自 DB(重用 market_board_payload
+    與 regime_payload);缺資料標「—」或省略該行,絕不補假值。
+    """
+    try:
+        board = market_board_payload(con)
+    except Exception:
+        return ""
+    rows = board.get("rows") or []
+    as_of = board.get("as_of") or ""
+    if not rows or not as_of:
+        return ""
+    n_top = 10 if extended else 5
+
+    def fmt_pct(v):
+        if v is None:
+            return "—"
+        return f"{'+' if v >= 0 else ''}{v:.2f}%"
+
+    def fmt_row(r):
+        close = r.get("close")
+        close_str = f"{close:.2f}" if close is not None else "—"
+        base = f"{r['symbol']} {fmt_pct(r.get('chg_pct'))}（收盤 {close_str}）"
+        if extended:
+            base += f"、5日% {fmt_pct(r.get('chg_5d_pct'))}"
+        return base
+
+    movers = [r for r in rows if r.get("chg_pct") is not None]
+    gainers = sorted(movers, key=lambda r: r["chg_pct"], reverse=True)[:n_top]
+    losers = sorted(movers, key=lambda r: r["chg_pct"])[:n_top]
+
+    lines = [f"【市場總覽快照】（日線資料，最新交易日 {as_of}，系統自動注入，非即時報價）"]
+
+    # 市場狀態（regime）
+    try:
+        reg = regime_payload(con)
+        regime = reg.get("regime") or "unknown"
+        if regime == "unknown":
+            lines.append(f"- 市場狀態：unknown（{reg.get('note') or '基準指數資料不足'}）")
+        else:
+            pct = reg.get("universe_above_ema50_pct")
+            pct_str = f"{pct:.0f}%" if pct is not None else "—"
+            lines.append(f"- 市場狀態：{regime}（全宇宙站上 EMA50 比例 {pct_str}）")
+    except Exception:
+        lines.append("- 市場狀態：unknown（regime 計算失敗）")
+
+    if gainers:
+        lines.append(f"- 當日漲幅前 {len(gainers)}：" + "、".join(fmt_row(r) for r in gainers))
+    if losers:
+        lines.append(f"- 當日跌幅前 {len(losers)}：" + "、".join(fmt_row(r) for r in losers))
+
+    wl = [r for r in rows if r.get("in_watchlist")]
+    if wl:
+        lines.append("- 觀察清單：" + "、".join(fmt_row(r) for r in wl))
+    else:
+        lines.append("- 觀察清單：(空)")
+
+    if extended:
+        vol_rows = sorted(
+            [r for r in rows if r.get("volume")],
+            key=lambda r: r["volume"], reverse=True,
+        )[:5]
+        if vol_rows:
+            lines.append("- 成交量前 5：" + "、".join(
+                f"{r['symbol']}（{r['volume']:,}）" for r in vol_rows))
+
+    # 近 7 日 X 討論熱度
+    try:
+        hot = con.execute(
+            "select symbol, count(*) as c from mentions "
+            "where mentioned_at >= datetime('now', '-7 day') "
+            "group by symbol order by c desc limit 5"
+        ).fetchall()
+        if hot:
+            lines.append("- 近 7 日 X 討論熱度前 5：" + "、".join(
+                f"{r[0]}（{r[1]} 次）" for r in hot))
+    except Exception:
+        pass
+
+    return "\n".join(lines) + "\n"
 
 
 def log_chat_transaction(tx):
@@ -48,6 +148,11 @@ def handle_chat_api(payload):
     if DB_PATH.exists():
         try:
             con = db()
+
+            # a-R1/a-R2: 市場總覽快照（每次注入精簡版；市場意圖 → 進階版）
+            overview = build_market_overview(con, extended=_detect_market_intent(user_message))
+            if overview:
+                db_context += "\n" + overview
 
             # Get list of all known symbols in DB
             db_symbols = [r[0] for r in con.execute("select distinct symbol from mentions").fetchall()]
@@ -166,7 +271,10 @@ def handle_chat_api(payload):
         "1. 僅基於本機資料庫提供的事實數據與推文內容回答問題。\n"
         "2. 絕對不能捏造任何股票代碼、提及次數、價格、日期或社群觀點。\n"
         "3. 歷史長期記憶中提及的偏好僅用於引導回答風格與關聯討論，不作為捏造事實的依據。\n"
-        "4. 如果資料庫中沒有相關的價格或推文數據，必須直接承認，絕不編造。\n\n"
+        "4. 如果資料庫中沒有相關的價格或推文數據，必須直接承認，絕不編造。\n"
+        "5. 你可以進行多檔股票比較與市場層級分析（大盤環境、類股強弱、前景推演），"
+        "依據是下方注入的【市場總覽快照】與個股資料；快照為日線資料非即時報價，"
+        "推論時請註明資料日期，超出快照與資料庫範圍的事實不要臆造。\n\n"
         f"這裡是你必須嚴格遵守的 serenity-skill 研究準則與工作流：\n{skill_content}\n\n"
         f"這裡是使用者提問相關的本機 SQLite 資料庫資料快照：\n{db_context}\n"
         f"{memories_context}\n"
