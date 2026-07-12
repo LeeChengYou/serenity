@@ -233,10 +233,11 @@ def migrate_analyst_estimates(con):
 
 def migrate_tw_symbols(con):
     """
-    Idempotent migration: create tw_symbols table (c2-R1).
-    code: 4-6 digit (+ optional single uppercase letter) company code
+    Idempotent migration: create tw_symbols table (c2-R1) + kind column (c3-R1).
+    code: 4-6 digit (+ optional single uppercase letter) company/fund code
     market: twse | tpex
     yahoo_symbol: code+'.TW' (twse) or code+'.TWO' (tpex)
+    kind: stock | etf  (default 'stock')
     """
     con.execute("""
         create table if not exists tw_symbols (
@@ -247,13 +248,19 @@ def migrate_tw_symbols(con):
             updated_at   TEXT NOT NULL
         )
     """)
+    # c3-R1: ALTER TABLE + 容錯（照 migrate_prices_ohlc 既有模式）
+    existing_cols = {row[1] for row in con.execute("PRAGMA table_info(tw_symbols)")}
+    if "kind" not in existing_cols:
+        con.execute("ALTER TABLE tw_symbols ADD COLUMN kind TEXT NOT NULL DEFAULT 'stock'")
+        print("[migrate] Added column tw_symbols.kind")
     con.commit()
 
 
 _TW_CODE_RE = re.compile(r"^\d{4,6}[A-Z]?$")
 
-_TWSE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
-_TPEX_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+_TWSE_URL     = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+_TPEX_URL     = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+_TWSE_ETF_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap47_L"  # c3-R1: 上市基金目錄
 
 _TW_HEADERS = {
     "User-Agent": (
@@ -279,16 +286,19 @@ def _tw_ssl_context():
 
 def fetch_tw_directory(con) -> tuple:
     """
-    c2-R1: 抓台股全目錄 (上市 + 上櫃)，INSERT OR REPLACE 到 tw_symbols。
-    回傳 (twse_count, tpex_count)。
-    單端失敗 → 保留舊列印警告；兩端皆失敗 → raise。
+    c3-R1 (擴充 c2-R1)：抓台股全目錄 (上市股票 + 上櫃股票 + 上市 ETF)，
+    INSERT OR REPLACE 到 tw_symbols。
+    回傳 (twse_count, tpex_count, etf_count)。
+    單源失敗 → 保留舊列印警告；三源全失敗 → raise。
+    股票列寫 kind='stock'；ETF 列寫 kind='etf'。
     """
     now_str = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     twse_count = 0
     tpex_count = 0
+    etf_count  = 0
     errors = []
 
-    # ── 上市 (TWSE) ──────────────────────────────────────────────────────────
+    # ── 上市股票 (TWSE) ────────────────────────────────────────────────────────
     try:
         req = urllib.request.Request(_TWSE_URL, headers=_TW_HEADERS)
         with urllib.request.urlopen(req, timeout=30, context=_tw_ssl_context()) as resp:
@@ -299,18 +309,18 @@ def fetch_tw_directory(con) -> tuple:
             if not _TW_CODE_RE.match(code) or not name:
                 continue
             con.execute(
-                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, updated_at)"
-                " VALUES(?, ?, 'twse', ?, ?)",
+                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, kind, updated_at)"
+                " VALUES(?, ?, 'twse', ?, 'stock', ?)",
                 (code, name, code + ".TW", now_str),
             )
             twse_count += 1
         con.commit()
-        print(f"[tw-directory] TWSE: {twse_count} rows upserted")
+        print(f"[tw-directory] TWSE stocks: {twse_count} rows upserted")
     except Exception as exc:
         errors.append(f"TWSE: {exc}")
         print(f"[tw-directory] WARN TWSE failed: {exc}", file=sys.stderr)
 
-    # ── 上櫃 (TPEX) ──────────────────────────────────────────────────────────
+    # ── 上櫃股票 (TPEX) ────────────────────────────────────────────────────────
     try:
         req = urllib.request.Request(_TPEX_URL, headers=_TW_HEADERS)
         with urllib.request.urlopen(req, timeout=30, context=_tw_ssl_context()) as resp:
@@ -321,21 +331,43 @@ def fetch_tw_directory(con) -> tuple:
             if not _TW_CODE_RE.match(code) or not name:
                 continue
             con.execute(
-                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, updated_at)"
-                " VALUES(?, ?, 'tpex', ?, ?)",
+                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, kind, updated_at)"
+                " VALUES(?, ?, 'tpex', ?, 'stock', ?)",
                 (code, name, code + ".TWO", now_str),
             )
             tpex_count += 1
         con.commit()
-        print(f"[tw-directory] TPEX: {tpex_count} rows upserted")
+        print(f"[tw-directory] TPEX stocks: {tpex_count} rows upserted")
     except Exception as exc:
         errors.append(f"TPEX: {exc}")
         print(f"[tw-directory] WARN TPEX failed: {exc}", file=sys.stderr)
 
-    if len(errors) == 2:
-        raise RuntimeError(f"[tw-directory] both markets failed: {'; '.join(errors)}")
+    # ── 上市 ETF (TWSE 基金目錄) ─────────────────────────────────────────────
+    try:
+        req = urllib.request.Request(_TWSE_ETF_URL, headers=_TW_HEADERS)
+        with urllib.request.urlopen(req, timeout=30, context=_tw_ssl_context()) as resp:
+            items = json.loads(resp.read().decode("utf-8"))
+        for item in items:
+            code = str(item.get("基金代號", "")).strip()
+            name = str(item.get("基金簡稱", "")).strip()
+            if not _TW_CODE_RE.match(code) or not name:
+                continue
+            con.execute(
+                "INSERT OR REPLACE INTO tw_symbols(code, name, market, yahoo_symbol, kind, updated_at)"
+                " VALUES(?, ?, 'twse', ?, 'etf', ?)",
+                (code, name, code + ".TW", now_str),
+            )
+            etf_count += 1
+        con.commit()
+        print(f"[tw-directory] TWSE ETFs: {etf_count} rows upserted")
+    except Exception as exc:
+        errors.append(f"ETF: {exc}")
+        print(f"[tw-directory] WARN ETF failed: {exc}", file=sys.stderr)
 
-    return twse_count, tpex_count
+    if len(errors) == 3:
+        raise RuntimeError(f"[tw-directory] all three sources failed: {'; '.join(errors)}")
+
+    return twse_count, tpex_count, etf_count
 
 
 TW_SEED_FILE = ROOT / "data" / "tw_seed_symbols.txt"
@@ -378,6 +410,191 @@ def fetch_tw_seed(con) -> None:
         except Exception as exc:
             print(f"[tw-seed] {yahoo_sym}: 抓取失敗 — {exc}", file=sys.stderr)
         time.sleep(0.5)
+
+
+# ---------------------------------------------------------------------------
+# (f) 台股中文新聞 + 情緒 Phase 2
+# ---------------------------------------------------------------------------
+
+_GOOGLE_NEWS_TW_URL = (
+    "https://news.google.com/rss/search?q={query}"
+    "&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+)
+
+
+def fetch_tw_news(con, pause: float = 1.5) -> None:
+    """
+    f-R1: 對 prices 有價的台股 symbols (.TW/.TWO) JOIN tw_symbols 取中文名
+    （kind='stock' 才抓，ETF 新聞雜訊高且事件研究無意義）。
+    query = '{中文簡稱} 股票' 消歧義；重用 _fetch_rss/_insert_news_item。
+    url 冪等；單檔失敗不中斷；sleep pause。
+    """
+    fetched_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    total_inserted = 0
+
+    # prices 有價的台股 × tw_symbols（kind='stock'）
+    rows = con.execute("""
+        SELECT DISTINCT p.symbol, t.name
+        FROM prices p
+        JOIN tw_symbols t ON t.yahoo_symbol = p.symbol
+        WHERE (p.symbol LIKE '%.TW' OR p.symbol LIKE '%.TWO')
+          AND t.kind = 'stock'
+        ORDER BY p.symbol
+    """).fetchall()
+
+    print(f"[tw-news] 開始抓取 {len(rows)} 檔台股中文新聞…")
+    for yahoo_sym, name in rows:
+        query = urllib.parse.quote(f"{name} 股票")
+        url = _GOOGLE_NEWS_TW_URL.format(query=query)
+        try:
+            items = _fetch_rss(url)
+        except Exception as exc:
+            print(f"  [tw-news] {yahoo_sym} RSS 失敗：{exc}", file=sys.stderr)
+            time.sleep(pause)
+            continue
+
+        inserted = 0
+        for item in items:
+            link = item.get("link", "")
+            title = item.get("title", "")
+            pub = _parse_rss_date(item.get("pubDate"))
+            inserted += _insert_news_item(
+                con, title, "Google News (台股)", link,
+                pub, "symbol", [yahoo_sym],
+                item.get("description", ""), fetched_at,
+            )
+        con.commit()
+        total_inserted += inserted
+        print(f"  [tw-news] {yahoo_sym}({name}): {len(items)} 筆, {inserted} 新增")
+        time.sleep(pause)
+
+    print(f"[tw-news] 完成 — 共新增 {total_inserted} 列")
+
+
+_VALID_SENTIMENTS = {"Bullish", "Bearish", "Neutral"}
+
+_TW_SENTIMENT_PROMPT = """\
+以下是台股新聞標題與摘要清單。請對每則新聞判斷情緒傾向。
+只回傳嚴格 JSON 陣列，格式：[{{"i":編號,"sentiment":"Bullish|Bearish|Neutral"}}]
+不得輸出任何額外文字或說明。
+
+{items_text}"""
+
+
+def score_tw_news_sentiment(con, backend: str = "local", limit: int = 50) -> int:
+    """
+    f-R2: 對 news 表中台股新聞（scope='symbol', symbols 含 .TW/.TWO）
+    且尚未有 news_sentiment 列（source='zh-news-llm'）的條目進行情緒標注。
+    每批 10 則；LLM 解析失敗 → 跳過，不落假值（零捏造）。
+    回傳本次標注筆數。
+    """
+    # 找待標注列（冪等：已有 zh-news-llm 的 url 不重標）
+    # 子查詢先過濾 json_valid：一列壞 JSON 不能讓 json_each 炸掉整個查詢
+    rows = con.execute("""
+        SELECT n.id, n.title, n.summary, n.published_at, n.url,
+               json_each.value AS yahoo_sym
+        FROM (SELECT * FROM news
+              WHERE scope = 'symbol' AND json_valid(symbols)) n,
+             json_each(n.symbols)
+        WHERE (json_each.value LIKE '%.TW' OR json_each.value LIKE '%.TWO')
+          AND NOT EXISTS (
+              SELECT 1 FROM news_sentiment ns
+              WHERE ns.url = n.url AND ns.source = 'zh-news-llm'
+          )
+        ORDER BY n.published_at DESC
+        LIMIT ?
+    """, (limit,)).fetchall()
+
+    if not rows:
+        print("[tw-sentiment] 無待標注新聞")
+        return 0
+
+    total = 0
+    BATCH = 10
+
+    for batch_start in range(0, len(rows), BATCH):
+        batch = rows[batch_start: batch_start + BATCH]
+        # 格式化批次文字
+        lines = []
+        for idx, row in enumerate(batch, 1):
+            title   = row[1] or ""
+            summary = row[2] or ""
+            lines.append(f"{idx}. 標題：{title}  摘要：{summary[:100]}")
+        items_text = "\n".join(lines)
+        prompt = _TW_SENTIMENT_PROMPT.format(items_text=items_text)
+
+        # 呼叫 LLM
+        raw_text = None
+        try:
+            if backend == "local":
+                from serenity.llm_local import call_local_llm
+                raw_text = call_local_llm(
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                )
+            else:
+                from serenity.gemini import call_gemini
+                from serenity.config import get_setting
+                model = get_setting("gemini_model") or "gemini-2.0-flash"
+                resp = call_gemini(
+                    model,
+                    [{"role": "user", "parts": [{"text": prompt}]}],
+                    system_instruction=(
+                        "你是情緒分析助理。只回傳 JSON 陣列，不得輸出任何其他文字。"
+                    ),
+                    temperature=0.1,
+                    task_class="batch",
+                )
+                raw_text = resp["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as exc:
+            print(f"  [tw-sentiment] LLM 失敗（批次 {batch_start}–{batch_start+len(batch)-1}）："
+                  f"{exc}", file=sys.stderr)
+            continue
+
+        # 剝 markdown 圍欄後解析
+        if raw_text and "```" in raw_text:
+            raw_text = re.sub(r"```[^\n]*\n?", "", raw_text).strip()
+
+        try:
+            parsed = json.loads(raw_text)
+            if not isinstance(parsed, list):
+                raise ValueError(f"回傳不是陣列：{raw_text!r}")
+        except Exception as exc:
+            print(f"  [tw-sentiment] JSON 解析失敗（批次 {batch_start}）：{exc} — raw={raw_text!r}",
+                  file=sys.stderr)
+            continue
+
+        # 寫入 news_sentiment
+        batch_ok = 0
+        for entry in parsed:
+            try:
+                idx = int(entry["i"]) - 1
+                sentiment = entry["sentiment"]
+                if sentiment not in _VALID_SENTIMENTS:
+                    print(f"  [tw-sentiment] 值域外 sentiment={sentiment!r}，跳過",
+                          file=sys.stderr)
+                    continue
+                if not (0 <= idx < len(batch)):
+                    continue
+                row = batch[idx]
+                row_id, title, summary, pub_at, url, yahoo_sym = row
+                con.execute(
+                    """INSERT OR IGNORE INTO news_sentiment
+                       (symbol, source, published_at, headline, sentiment,
+                        sentiment_score, url)
+                       VALUES (?, 'zh-news-llm', ?, ?, ?, NULL, ?)""",
+                    (yahoo_sym, pub_at, (title or "")[:500], sentiment, url),
+                )
+                batch_ok += 1
+            except (KeyError, TypeError, ValueError) as exc:
+                print(f"  [tw-sentiment] entry 解析錯誤：{exc}", file=sys.stderr)
+                continue
+        con.commit()
+        total += batch_ok
+        print(f"  [tw-sentiment] 批次 {batch_start}–{batch_start+len(batch)-1}：標注 {batch_ok} 筆")
+
+    print(f"[tw-sentiment] 完成 — 本次共標注 {total} 筆")
+    return total
 
 
 def parse_curl(path: Path):
@@ -1724,6 +1941,7 @@ def main():
     ap.add_argument("command", choices=[
         "fetch-x", "prices", "all", "stats", "stocktwits", "news", "fundamentals",
         "benchmarks", "estimates", "tw-directory", "tw-seed",
+        "tw-news", "tw-sentiment",
     ])
     ap.add_argument("--max-pages", type=int, default=20)
     ap.add_argument("--days", type=int, default=420)
@@ -1731,6 +1949,10 @@ def main():
     ap.add_argument("--min-mentions", type=int, default=2)
     ap.add_argument("--symbol", help="Single symbol for stocktwits subcommand")
     ap.add_argument("--pause", type=float, default=1.0, help="Seconds between requests")
+    ap.add_argument("--backend", default="local", choices=["local", "gemini"],
+                    help="LLM backend for tw-sentiment (default: local)")
+    ap.add_argument("--limit", type=int, default=50,
+                    help="Max items to process for tw-sentiment")
     args = ap.parse_args()
     if args.command in {"fetch-x", "all"}:
         fetch_x(args.max_pages)
@@ -1756,8 +1978,21 @@ def main():
     if args.command == "tw-directory":
         con = connect()
         try:
-            twse_n, tpex_n = fetch_tw_directory(con)
-            print(f"[tw-directory] 完成：上市 {twse_n}、上櫃 {tpex_n}")
+            twse_n, tpex_n, etf_n = fetch_tw_directory(con)
+            print(f"[tw-directory] 完成：上市股票 {twse_n}、上櫃股票 {tpex_n}、上市 ETF {etf_n}")
+        finally:
+            con.close()
+    if args.command == "tw-news":
+        con = connect()
+        try:
+            fetch_tw_news(con, pause=args.pause)
+        finally:
+            con.close()
+    if args.command == "tw-sentiment":
+        con = connect()
+        try:
+            n = score_tw_news_sentiment(con, backend=args.backend, limit=args.limit)
+            print(f"[tw-sentiment] 標注完成：{n} 筆")
         finally:
             con.close()
     if args.command == "tw-seed":

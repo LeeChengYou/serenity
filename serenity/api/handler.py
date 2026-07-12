@@ -334,7 +334,8 @@ class Handler(SimpleHTTPRequestHandler):
                 rows_raw = con.execute(
                     """
                     SELECT t.code, t.name, t.market, t.yahoo_symbol,
-                           CASE WHEN p.symbol IS NOT NULL THEN 1 ELSE 0 END AS has_prices
+                           CASE WHEN p.symbol IS NOT NULL THEN 1 ELSE 0 END AS has_prices,
+                           COALESCE(t.kind, 'stock') AS kind
                     FROM tw_symbols t
                     LEFT JOIN (SELECT DISTINCT symbol FROM prices) p
                          ON p.symbol = t.yahoo_symbol
@@ -350,6 +351,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "market":       r[2],
                         "yahoo_symbol": r[3],
                         "has_prices":   bool(r[4]),
+                        "kind":         r[5],
                     }
                     for r in rows_raw
                 ]
