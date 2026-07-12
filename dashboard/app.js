@@ -3521,12 +3521,12 @@ async function fpTwSearchRun() {
       return;
     }
     if (!data.items || !data.items.length) {
-      dropdown.innerHTML = `<div style="padding:10px;font-size:12px;color:var(--muted);">查無符合（ETF/權證暫不支援）</div>`;
+      dropdown.innerHTML = `<div style="padding:10px;font-size:12px;color:var(--muted);">查無符合（權證/上櫃 ETF 暫不支援）</div>`;
       dropdown.style.display = 'block';
       return;
     }
     dropdown.innerHTML = data.items.map(it => {
-      const tag = it.market === 'twse' ? '上市' : '上櫃';
+      const tag = it.kind === 'etf' ? 'ETF' : (it.market === 'twse' ? '上市' : '上櫃');
       const priceBadge = it.has_prices
         ? '<span style="color:var(--green);font-size:10px;">●已有價格</span>'
         : '<span style="color:var(--muted);font-size:10px;">○未抓價</span>';
