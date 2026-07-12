@@ -93,13 +93,21 @@ def build_market_overview(con, extended: bool = False) -> str:
         lines.append("- 觀察清單：(空)")
 
     if extended:
+        def fmt_vol(v):
+            # 由 python 換算單位,避免小模型自行換算出錯(曾把 1.47 億唸成 14.7 億)
+            if v >= 1e8:
+                return f"{v / 1e8:.2f} 億股"
+            if v >= 1e4:
+                return f"{v / 1e4:.0f} 萬股"
+            return f"{v:,} 股"
+
         vol_rows = sorted(
             [r for r in rows if r.get("volume")],
             key=lambda r: r["volume"], reverse=True,
         )[:5]
         if vol_rows:
             lines.append("- 成交量前 5：" + "、".join(
-                f"{r['symbol']}（{r['volume']:,}）" for r in vol_rows))
+                f"{r['symbol']}（{fmt_vol(r['volume'])}）" for r in vol_rows))
 
     # 近 7 日 X 討論熱度
     try:
