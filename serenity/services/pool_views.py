@@ -304,7 +304,16 @@ def market_board_payload(con: sqlite3.Connection) -> dict:
             spark_map[sym] = []
         spark_map[sym].append(c)
 
-    # ── 8. 組裝 rows ─────────────────────────────────────────────────────────
+    # ── 8. tw_symbols name lookup (c2-R3) ────────────────────────────────────
+    try:
+        tw_name_rows = con.execute(
+            "SELECT yahoo_symbol, name FROM tw_symbols"
+        ).fetchall()
+        tw_name_map: dict = {r[0]: r[1] for r in tw_name_rows}
+    except Exception:
+        tw_name_map = {}
+
+    # ── 9. 組裝 rows ─────────────────────────────────────────────────────────
     symbols = sorted(sym_t0.keys())
     rows = []
     for sym in symbols:
@@ -319,6 +328,7 @@ def market_board_payload(con: sqlite3.Connection) -> dict:
             chg_5d_pct = round((close / t5 - 1) * 100, 4)
         rows.append({
             "symbol":        sym,
+            "name":          tw_name_map.get(sym),  # c2-R3: 台股中文簡稱，美股 None
             "close":         round(close, 4) if close is not None else None,
             "prev_close":    round(prev_close, 4) if prev_close is not None else None,
             "chg_pct":       chg_pct,

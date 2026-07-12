@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool7" />
+  <link rel="stylesheet" href="/styles.css?v=20260712-newsx1" />
 </head>
 <body>
   <main class="shell">
@@ -51,6 +51,7 @@
       <button data-page="hitrate" onclick="switchGlobalPage('hitrate')">📈 命中率</button>
       <button data-page="arena" onclick="switchGlobalPage('arena')">🤖 經理人競技場</button>
       <button data-page="fundpool" onclick="switchGlobalPage('fundpool')">💼 資金池</button>
+      <button data-page="newspage" onclick="switchGlobalPage('newspage')">📰 新聞·專家</button>
     </nav>
 
     <section class="kpis reveal delay-1" id="kpis"></section>
@@ -139,10 +140,20 @@
               <button id="fpRegionTWBtn" class="fp-wl-toggle-btn" onclick="fpSetRegionFilter('tw')">🇹🇼 台股</button>
               <span class="fp-market-hint">點列選股；點★加入/移除觀察清單</span>
             </div>
-            <div class="fp-market-controls" style="margin-top:4px;">
+            <div class="fp-market-controls" style="margin-top:4px;position:relative;">
               <input type="text" id="fpAddSymbolInput" placeholder="新增代號 2330.TW…" style="width:140px;" />
               <button class="fp-wl-toggle-btn" onclick="fpAddSymbolToWatchlist()" style="min-width:90px;">＋新增代號</button>
               <span id="fpAddSymbolStatus" style="font-size:11px;color:var(--muted);margin-left:6px;"></span>
+              <!-- 台股搜尋框 (c2-R3) -->
+              <div style="display:inline-block;position:relative;margin-left:12px;">
+                <input type="text" id="fpTwSearchInput"
+                       placeholder="搜尋台股 台積 / 2330…"
+                       style="width:160px;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;"
+                       oninput="fpTwSearchDebounce()" autocomplete="off" />
+                <div id="fpTwSearchDropdown"
+                     style="display:none;position:absolute;top:100%;left:0;width:300px;background:var(--paper);border:1px solid var(--line);border-radius:4px;z-index:200;max-height:240px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.15);">
+                </div>
+              </div>
             </div>
             <div class="fp-market-table-wrap">
               <table class="arena-table fp-market-table" id="fpMarketTable">
@@ -296,6 +307,35 @@
         </div><!-- /.fp-right-col -->
 
       </div><!-- /.fp-two-col-grid -->
+    </section>
+
+    <!-- 新聞·專家頁 — hidden by default (e-R2) -->
+    <section id="newspageView" class="arena-view" style="display:none;">
+      <div class="arena-disclaimer">
+        台股中文新聞源尚未接入（Phase 2），目前以美股英文源為主。
+      </div>
+
+      <!-- 新聞流區 -->
+      <div class="arena-section">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          <h2 class="arena-section-title" style="margin:0;">📰 新聞流</h2>
+          <input type="text" id="newsFeedSymFilter" placeholder="篩選代號（如 NVDA）"
+                 style="padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;width:150px;"
+                 oninput="newsFeedFilterChanged()" />
+          <button style="font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:4px;background:transparent;cursor:pointer;"
+                  onclick="newsFeedClearFilter()">✕ 清除</button>
+        </div>
+        <div id="newsFeedList"><p class="placeholder-text">載入中...</p></div>
+        <div style="text-align:center;margin-top:10px;">
+          <button id="newsFeedMoreBtn" class="fp-wl-toggle-btn" onclick="newsFeedLoadMore()" style="display:none;">載入更多</button>
+        </div>
+      </div>
+
+      <!-- 專家觀點區 -->
+      <div class="arena-section" style="margin-top:20px;">
+        <h2 class="arena-section-title">🎯 專家觀點</h2>
+        <div id="expertViewsList"><p class="placeholder-text">載入中...</p></div>
+      </div>
     </section>
 
     <section class="workbench reveal delay-2">
@@ -594,7 +634,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/app.js?v=20260712-fundpool7"></script>
+  <script src="/app.js?v=20260712-newsx1"></script>
   <script>
     // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
     if ('serviceWorker' in navigator) {
