@@ -677,6 +677,63 @@ def _build_llm_prompt(symbol: str, payload: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# d-2 回填 outcome_7d
+# ---------------------------------------------------------------------------
+
+def backfill_report_outcomes(con: sqlite3.Connection) -> int:
+    """
+    冪等。對 outcome_7d IS NULL 的每列：
+    基準 close = 該列已存的 close；為 NULL 時 fallback 到 prices 中該 symbol
+    date <= as_of 的最近 close；仍缺 → 跳過。
+    取 prices 中該 symbol date > as_of 升冪前 7 列；滿 7 個交易日才回填
+    outcome_7d = 第7交易日close / 基準close − 1；不足 → 維持 NULL。
+    回傳本次填入筆數。
+    """
+    migrate(con)  # 確保表存在
+    pending = con.execute(
+        "SELECT id, symbol, as_of, close FROM deep_dive_reports WHERE outcome_7d IS NULL"
+    ).fetchall()
+
+    filled = 0
+    for row in pending:
+        symbol   = row["symbol"]
+        as_of    = row["as_of"]
+        base_close = row["close"]
+
+        # fallback：若 close 欄 NULL，從 prices 取
+        if base_close is None:
+            fb = con.execute(
+                "SELECT close FROM prices WHERE symbol=? AND date <= ? ORDER BY date DESC LIMIT 1",
+                (symbol, as_of),
+            ).fetchone()
+            if fb is None or fb["close"] is None:
+                continue
+            base_close = fb["close"]
+
+        future_rows = con.execute(
+            "SELECT close FROM prices WHERE symbol=? AND date > ? ORDER BY date",
+            (symbol, as_of),
+        ).fetchall()
+
+        if len(future_rows) < 7:
+            continue  # 不足 7 日，誠實維持 NULL
+
+        day7_close = future_rows[6]["close"]
+        if day7_close is None:
+            continue
+
+        outcome = day7_close / base_close - 1.0
+        con.execute(
+            "UPDATE deep_dive_reports SET outcome_7d=? WHERE id=?",
+            (outcome, row["id"]),
+        )
+        filled += 1
+
+    con.commit()
+    return filled
+
+
+# ---------------------------------------------------------------------------
 # deep_dive_payload 轉文字（d-R5 會診整合用）
 # ---------------------------------------------------------------------------
 

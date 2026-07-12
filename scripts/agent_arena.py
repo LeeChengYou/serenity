@@ -649,6 +649,69 @@ class StubBackend(AgentBackend):
         }
 
 
+# ---------------------------------------------------------------------------
+# 模組層共用 system prompts（GeminiBackend 與 LocalBackend 共用，防規則分岔）
+# ---------------------------------------------------------------------------
+
+_DECIDE_SYSTEM = (
+    "你是一位 AI 基金經理人，負責管理模擬資金投資組合（paper trading，非真實投資）。\n"
+    "根據市場簡報與你的策略卡，做出今日買賣決策。\n"
+    "輸出嚴格 JSON，欄位名稱必須完全一致，不得增減：\n"
+    '{"actions":[{"side":"BUY","symbol":"NVDA","usd":600,"reason":"進場理由（必填，<=100字）"},\n'
+    '            {"side":"SELL","symbol":"MU","pct":50,"reason":"出場理由（必填，<=100字）"}],\n'
+    ' "watch":["觀察股，最多3檔"],\n'
+    ' "memory_note":"給明天的自己的備忘（<=50字）"}\n'
+    "規則：\n"
+    "- side 只能是 BUY 或 SELL；BUY 必須用 usd（美元金額），SELL 必須用 pct（持倉百分比 1-100）\n"
+    "- 只能交易簡報 PRICES 區塊列出的股票；每日最多 3 筆；單一持股上限 NAV 的 40%\n"
+    "- 沒有好機會時 actions 給空陣列 []（持有不動也是合法決策）\n"
+    "- 違反規則的單會被引擎拒絕並記錄原因"
+)
+
+_REFLECT_SYSTEM = (
+    "你是一位 AI 基金經理人，正在進行月度反思（paper trading）。\n"
+    "根據本月交易明細、績效指標與同業公開信，撰寫反思並更新策略卡。\n"
+    "輸出嚴格 JSON：{\"public_letter\":\"...\",\"reflection_md\":\"...\",\"strategy_md\":\"...\"}"
+)
+
+
+def _strip_md_fence(text: str) -> str:
+    """剝除 ```json ... ``` / ``` ... ``` Markdown 圍欄，回傳純文字。"""
+    text = text.strip()
+    if text.startswith("```"):
+        # 找第一個換行後的內容，到最後一個 ``` 結束
+        lines = text.split("\n")
+        # 去掉第一行（```json 或 ```）和最後一行（```）
+        inner_lines = lines[1:]
+        if inner_lines and inner_lines[-1].strip() == "```":
+            inner_lines = inner_lines[:-1]
+        text = "\n".join(inner_lines).strip()
+    return text
+
+
+def _resolve_backend_name(flag_value: str | None) -> str:
+    """
+    解析 backend 名稱。優先序：flag > settings(arena_backend) > 預設 gemini。
+    非法值 → raise ValueError。
+    """
+    _valid = {"gemini", "local"}
+    if flag_value is not None:
+        if flag_value not in _valid:
+            raise ValueError(f"非法 backend 值：{flag_value!r}（合法：gemini、local）")
+        return flag_value
+    # 從 settings 讀（只吞讀取失敗，不吞非法值——非法值必須讓呼叫端 exit 1）
+    try:
+        from serenity.config import get_setting
+        val = get_setting("arena_backend")
+    except Exception:
+        val = None
+    if val:
+        if val not in _valid:
+            raise ValueError(f"settings arena_backend 非法值：{val!r}（合法：gemini、local）")
+        return val
+    return "gemini"
+
+
 class GeminiBackend(AgentBackend):
     """Production backend using Gemini via server.call_gemini."""
 
@@ -671,26 +734,12 @@ class GeminiBackend(AgentBackend):
             )
 
     def decide(self, agent_id: str, briefing: str, strategy: str) -> dict:
-        system = (
-            "你是一位 AI 基金經理人，負責管理模擬資金投資組合（paper trading，非真實投資）。\n"
-            "根據市場簡報與你的策略卡，做出今日買賣決策。\n"
-            "輸出嚴格 JSON，欄位名稱必須完全一致，不得增減：\n"
-            '{"actions":[{"side":"BUY","symbol":"NVDA","usd":600,"reason":"進場理由（必填，<=100字）"},\n'
-            '            {"side":"SELL","symbol":"MU","pct":50,"reason":"出場理由（必填，<=100字）"}],\n'
-            ' "watch":["觀察股，最多3檔"],\n'
-            ' "memory_note":"給明天的自己的備忘（<=50字）"}\n'
-            "規則：\n"
-            "- side 只能是 BUY 或 SELL；BUY 必須用 usd（美元金額），SELL 必須用 pct（持倉百分比 1-100）\n"
-            "- 只能交易簡報 PRICES 區塊列出的股票；每日最多 3 筆；單一持股上限 NAV 的 40%\n"
-            "- 沒有好機會時 actions 給空陣列 []（持有不動也是合法決策）\n"
-            "- 違反規則的單會被引擎拒絕並記錄原因"
-        )
         prompt = f"## 策略卡\n{strategy}\n\n## 市場簡報\n{briefing}"
         try:
             res = self._srv.call_gemini(
                 model_name="gemini-2.5-flash",
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
-                system_instruction=system,
+                system_instruction=_DECIDE_SYSTEM,
                 temperature=0.3,
                 response_mime_type="application/json",
                 task_class="agent_arena",
@@ -709,16 +758,11 @@ class GeminiBackend(AgentBackend):
             return {"actions": [], "watch": [], "memory_note": "", "backend_error": True}
 
     def reflect(self, agent_id: str, dossier: str) -> dict:
-        system = (
-            "你是一位 AI 基金經理人，正在進行月度反思（paper trading）。\n"
-            "根據本月交易明細、績效指標與同業公開信，撰寫反思並更新策略卡。\n"
-            "輸出嚴格 JSON：{\"public_letter\":\"...\",\"reflection_md\":\"...\",\"strategy_md\":\"...\"}"
-        )
         try:
             res = self._srv.call_gemini(
                 model_name="gemini-2.5-pro",
                 contents=[{"role": "user", "parts": [{"text": dossier}]}],
-                system_instruction=system,
+                system_instruction=_REFLECT_SYSTEM,
                 temperature=0.4,
                 response_mime_type="application/json",
                 task_class="agent_arena",
@@ -727,6 +771,55 @@ class GeminiBackend(AgentBackend):
             return json.loads(text)
         except Exception as exc:
             print(f"[GeminiBackend] reflect error for {agent_id}: {exc}")
+            return {"public_letter": "", "reflection_md": "", "strategy_md": ""}
+
+
+class LocalBackend(AgentBackend):
+    """本地 LLM backend（Ollama / OpenAI-compatible）。b2-R1。"""
+
+    def __init__(self):
+        _root = Path(__file__).resolve().parents[1]
+        if str(_root) not in sys.path:
+            sys.path.insert(0, str(_root))
+        from serenity.llm_local import is_local_llm_up
+        if not is_local_llm_up():
+            raise RuntimeError(
+                "本地模型未啟動：請先啟動 Ollama（ollama serve）並確認已 pull qwen3:14b"
+            )
+
+    def decide(self, agent_id: str, briefing: str, strategy: str) -> dict:
+        _root = Path(__file__).resolve().parents[1]
+        if str(_root) not in sys.path:
+            sys.path.insert(0, str(_root))
+        from serenity.llm_local import call_local_llm
+        prompt = f"## 策略卡\n{strategy}\n\n## 市場簡報\n{briefing}"
+        try:
+            raw = call_local_llm(
+                messages=[{"role": "user", "content": prompt}],
+                system=_DECIDE_SYSTEM,
+                temperature=0.3,
+            )
+            text = _strip_md_fence(raw)
+            return json.loads(text)
+        except Exception as exc:
+            print(f"[LocalBackend] decide error for {agent_id}: {exc}")
+            return {"actions": [], "watch": [], "memory_note": "", "backend_error": True}
+
+    def reflect(self, agent_id: str, dossier: str) -> dict:
+        _root = Path(__file__).resolve().parents[1]
+        if str(_root) not in sys.path:
+            sys.path.insert(0, str(_root))
+        from serenity.llm_local import call_local_llm
+        try:
+            raw = call_local_llm(
+                messages=[{"role": "user", "content": dossier}],
+                system=_REFLECT_SYSTEM,
+                temperature=0.4,
+            )
+            text = _strip_md_fence(raw)
+            return json.loads(text)
+        except Exception as exc:
+            print(f"[LocalBackend] reflect error for {agent_id}: {exc}")
             return {"public_letter": "", "reflection_md": "", "strategy_md": ""}
 
 
@@ -1378,13 +1471,24 @@ def cmd_daily(args):
     as_of = args.as_of
     only_agents = [a.strip() for a in args.agents.split(",")] if args.agents else None
 
-    # Try GeminiBackend unless dry-run
+    # 優先序：dry-run(Stub) > --backend 旗標 > settings > 預設 gemini
     if args.dry_run:
         backend = StubBackend()
         print(f"[arena] dry-run 模式，使用 StubBackend")
     else:
         try:
-            backend = GeminiBackend()
+            flag_val = getattr(args, "backend", None)
+            backend_name = _resolve_backend_name(flag_val)
+        except ValueError as exc:
+            print(f"[錯誤] {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            if backend_name == "local":
+                backend = LocalBackend()
+                print("[arena] 使用 LocalBackend（本地 Ollama）")
+            else:
+                backend = GeminiBackend()
         except RuntimeError as exc:
             print(f"[錯誤] {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1406,7 +1510,18 @@ def cmd_monthly(args):
     month = args.month or datetime.now().strftime("%Y-%m")
 
     try:
-        backend = GeminiBackend()
+        flag_val = getattr(args, "backend", None)
+        backend_name = _resolve_backend_name(flag_val)
+    except ValueError as exc:
+        print(f"[錯誤] {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        if backend_name == "local":
+            backend = LocalBackend()
+            print("[arena] 使用 LocalBackend（本地 Ollama）")
+        else:
+            backend = GeminiBackend()
     except RuntimeError as exc:
         print(f"[錯誤] {exc}", file=sys.stderr)
         sys.exit(1)
@@ -1465,10 +1580,12 @@ def main():
     p_daily.add_argument("--as-of", metavar="YYYY-MM-DD", help="指定日期（預設今日）")
     p_daily.add_argument("--agents", metavar="a,b,...", help="只處理指定 agent（逗號分隔）")
     p_daily.add_argument("--dry-run", action="store_true", help="使用 StubBackend（不呼叫 Gemini）")
+    p_daily.add_argument("--backend", metavar="{gemini,local}", help="指定 backend（覆寫 settings）")
 
     # monthly
     p_monthly = sub.add_parser("monthly", help="執行月度結算與反思", parents=[db_parent])
     p_monthly.add_argument("--month", metavar="YYYY-MM", help="指定月份（預設當月）")
+    p_monthly.add_argument("--backend", metavar="{gemini,local}", help="指定 backend（覆寫 settings）")
 
     # status
     sub.add_parser("status", help="顯示 agent 狀態摘要", parents=[db_parent])

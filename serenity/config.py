@@ -82,6 +82,7 @@ _VALID_KEYS = {
     "auth_token",
     "local_llm_base_url",
     "local_llm_model",
+    "arena_backend",
 }
 
 _DEFAULTS = {
@@ -95,6 +96,7 @@ _DEFAULTS = {
     "auth_token": "",
     "local_llm_base_url": "http://127.0.0.1:11434",
     "local_llm_model": "qwen3:14b",
+    "arena_backend": "",
 }
 
 # env var mapping（設定名稱 → 環境變數名稱）
@@ -109,6 +111,7 @@ _ENV_MAP = {
     "auth_token":             "SERENITY_AUTH_TOKEN",
     "local_llm_base_url":     "LOCAL_LLM_BASE_URL",
     "local_llm_model":        "LOCAL_LLM_MODEL",
+    "arena_backend":          "ARENA_BACKEND",
 }
 
 
