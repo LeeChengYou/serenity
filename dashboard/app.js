@@ -3674,22 +3674,18 @@ async function _loadExpertViews() {
   if (!el) return;
   try {
     const data = await fetch('/api/expert-views').then(r => r.json());
-    const views = data.views || data.expert_views || [];
+    const views = data.items || [];
     if (!views.length) {
       el.innerHTML = '<p class="placeholder-text" style="padding:12px;">無專家觀點資料</p>';
       return;
     }
     el.innerHTML = views.map(v => {
-      const symsHtml = (v.symbols || []).map(s =>
-        `<span style="background:var(--line);padding:1px 6px;border-radius:3px;font-size:11px;">${escapeHtml(s)}</span>`
-      ).join(' ');
       const credClass = (v.credibility || 0) >= 0.7 ? 'color:var(--green)' : (v.credibility || 0) >= 0.4 ? 'color:var(--ink)' : 'color:var(--muted)';
       return `<div style="padding:10px 0;border-bottom:1px solid var(--line);">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
           <span style="font-weight:600;">${escapeHtml(v.author || v.source || '—')}</span>
           <span style="${credClass};font-size:12px;">信度 ${((v.credibility || 0) * 100).toFixed(0)}%</span>
-          ${symsHtml}
-          <span style="font-size:11px;color:var(--muted);">${escapeHtml((v.published_at || v.created_at || '').slice(0, 10))}</span>
+          <span style="font-size:11px;color:var(--muted);">${escapeHtml((v.published_at || '').slice(0, 10))}</span>
         </div>
         ${v.title ? `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(v.title)}</div>` : ''}
         <div style="font-size:13px;color:var(--muted);">${escapeHtml((v.text || v.content || '').slice(0, 300))}${(v.text || v.content || '').length > 300 ? '…' : ''}</div>

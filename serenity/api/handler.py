@@ -276,7 +276,11 @@ class Handler(SimpleHTTPRequestHandler):
                     return {"error": str(e)}
             # e-R1: 新聞流 API
             if path == "/api/news-feed":
-                limit = min(int((query.get("limit") or [50])[0]), 200)
+                try:
+                    limit = int((query.get("limit") or [50])[0])
+                except (ValueError, TypeError):
+                    limit = 50
+                limit = max(1, min(limit, 200))
                 symbol = (query.get("symbol") or [""])[0].strip().upper() or None
                 before = (query.get("before") or [""])[0].strip() or None
                 params: list = []

@@ -326,19 +326,27 @@ def fetch_tw_directory(con) -> tuple:
     return twse_count, tpex_count
 
 
-# 種子代號清單 (c2-R4)
-_TW_SEED_CODES = [
-    "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891",
-    "2886", "2884", "2303", "3711", "2002", "1301", "1303", "1216", "2357",
-    "3008", "2892",
-]
+TW_SEED_FILE = ROOT / "data" / "tw_seed_symbols.txt"
+
+
+def _load_tw_seed_codes() -> list:
+    """c2-R4: 從 data/tw_seed_symbols.txt 讀種子代號清單（跳過 # 與空行）。"""
+    if not TW_SEED_FILE.exists():
+        print(f"[tw-seed] 找不到種子檔 {TW_SEED_FILE}，退出。", file=sys.stderr)
+        sys.exit(1)
+    codes = []
+    for line in TW_SEED_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            codes.append(line)
+    return codes
 
 
 def fetch_tw_seed(con) -> None:
     """
     c2-R4: 逐檔種子代號 — 不在目錄跳過；prices 已有跳過；否則 fetch_prices_for_symbol。
     """
-    for code in _TW_SEED_CODES:
+    for code in _load_tw_seed_codes():
         row = con.execute(
             "SELECT yahoo_symbol FROM tw_symbols WHERE code=?", (code,)
         ).fetchone()
