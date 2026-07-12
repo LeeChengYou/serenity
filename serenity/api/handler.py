@@ -464,7 +464,17 @@ class Handler(SimpleHTTPRequestHandler):
                     participants = participants[:fp.CONSULT_MAX_PARTICIPANTS]
                 if not participants:
                     raise _BadRequest("無法確定會診參與者，請指定 participants")
-                backend = fp.GeminiConsultBackend()
+                # b-R4: 選填 backend('gemini' 預設 | 'local')
+                backend_name = (payload.get("backend") or "gemini").lower()
+                if backend_name == "local":
+                    backend = fp.LocalConsultBackend()
+                elif backend_name == "gemini":
+                    backend = fp.GeminiConsultBackend()
+                else:
+                    raise _HTTPResponse(
+                        {"error": f"backend 不合法：{backend_name!r}（合法值：'gemini'、'local'）"},
+                        400,
+                    )
                 try:
                     consult_id = fp.run_consult(
                         con, pool_id, question, symbol or "",

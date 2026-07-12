@@ -282,6 +282,24 @@ def handle_chat_api(payload):
     )
 
     # 3. Call LLM or fallback
+    # b-R3: model=='local' → 走本地 Ollama，不需 Gemini key
+    if payload.get("model") == "local":
+        from ..llm_local import LocalLLMUnavailable, call_local_llm
+        # prefix cache 友善：system_instruction（不變內容）已在 system 位置，messages 是動態內容
+        openai_messages = []
+        for msg in messages:
+            role = "user" if msg.get("role") == "user" else "assistant"
+            openai_messages.append({"role": role, "content": msg.get("content", "")})
+        try:
+            reply = call_local_llm(
+                messages=openai_messages,
+                system=system_instruction,
+                temperature=0.3,
+            )
+            return {"response": reply}
+        except LocalLLMUnavailable as exc:
+            return {"error": str(exc)}
+
     if _key_manager.has_any_key():
         try:
             model_name = payload.get("model") or get_setting("gemini_model")

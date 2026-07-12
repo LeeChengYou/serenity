@@ -1785,8 +1785,9 @@ async function sendChatMessage() {
   const input = $('chatInput'), sendBtn = $('chatSend');
   const text = input.value.trim();
   if (!text) return;
-  // Phase 2 guard: require API key
-  if (_settingsState && !_settingsState.has_key) {
+  // Phase 2 guard: require API key（本地 Ollama 不需 Gemini key，跳過守衛）
+  const _chatSelectVal = $('chatModel').value;
+  if (_chatSelectVal !== 'local' && _settingsState && !_settingsState.has_key) {
     _requireApiKey('AI 對話');
     return;
   }

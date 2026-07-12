@@ -462,6 +462,38 @@ class StubConsultBackend(ConsultBackend):
         return self._synthesize_text
 
 
+class LocalConsultBackend(ConsultBackend):
+    """本地 Ollama 後端（b-R4）。走 serenity.llm_local.call_local_llm；要求 JSON 輸出。"""
+
+    def opine(self, agent_id: str, prompt: str) -> dict:
+        from serenity.llm_local import call_local_llm
+        system = (
+            "你是 AI 基金經理人，對使用者的投資議題表達立場。\n"
+            "嚴格輸出 JSON（不含 markdown）：\n"
+            '{"stance":"support|oppose|neutral","confidence":0.0~1.0,"opinion":"理由（≤150 字）"}'
+        )
+        text = call_local_llm(
+            messages=[{"role": "user", "content": prompt}],
+            system=system,
+            temperature=0.3,
+        )
+        parsed = json.loads(text)  # 解析失敗 → raise（由 run_consult 捕捉標 absent），不靜默丟棄
+        return parsed
+
+    def synthesize(self, prompt: str) -> str:
+        from serenity.llm_local import call_local_llm
+        system = (
+            "你是 AI 公司主席，彙整各位 AI 經理人的意見並撰寫綜合報告（繁體中文）。\n"
+            "報告需包含：共識、分歧、多空論點、建議行動、主要風險。≤300 字純文字。"
+        )
+        text = call_local_llm(
+            messages=[{"role": "user", "content": prompt}],
+            system=system,
+            temperature=0.3,
+        )
+        return text.strip()  # 失敗 → raise，不靜默丟棄
+
+
 class GeminiConsultBackend(ConsultBackend):
     """正式 Gemini 後端。使用 serenity.gemini.call_gemini；要求 JSON 輸出。"""
 

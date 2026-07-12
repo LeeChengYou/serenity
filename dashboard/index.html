@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool3" />
+  <link rel="stylesheet" href="/styles.css?v=20260712-fundpool4" />
 </head>
 <body>
   <main class="shell">
@@ -453,6 +453,7 @@
               <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
               <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
               <option value="gemini-1.5-flash-8b">Gemini 1.5 Flash-8B</option>
+              <option value="local">本地 Ollama（qwen3:14b）</option>
               <option value="custom">自訂模型...</option>
             </select>
             <input id="customModelInput" style="display: none; width: 90px; font-size: 10px; padding: 4px 6px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.5); outline: none; margin-left: 4px;" placeholder="自訂..." />
@@ -562,7 +563,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
   <!-- Lightweight Charts (candlestick price chart) -->
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/app.js?v=20260712-fundpool3"></script>
+  <script src="/app.js?v=20260712-fundpool4"></script>
   <script>
     // PWA Service Worker 註冊（需 HTTPS 或 localhost/127.0.0.1）
     if ('serviceWorker' in navigator) {

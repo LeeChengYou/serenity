@@ -80,6 +80,8 @@ _VALID_KEYS = {
     "gemini_translate_model",
     "gemini_memory_model",
     "auth_token",
+    "local_llm_base_url",
+    "local_llm_model",
 }
 
 _DEFAULTS = {
@@ -91,6 +93,8 @@ _DEFAULTS = {
     "gemini_api_key_3": "",
     "gemini_api_key_4": "",
     "auth_token": "",
+    "local_llm_base_url": "http://127.0.0.1:11434",
+    "local_llm_model": "qwen3:14b",
 }
 
 # env var mapping（設定名稱 → 環境變數名稱）
@@ -103,6 +107,8 @@ _ENV_MAP = {
     "gemini_translate_model": "GEMINI_TRANSLATE_MODEL",
     "gemini_memory_model":    "GEMINI_MEMORY_MODEL",
     "auth_token":             "SERENITY_AUTH_TOKEN",
+    "local_llm_base_url":     "LOCAL_LLM_BASE_URL",
+    "local_llm_model":        "LOCAL_LLM_MODEL",
 }
 
 

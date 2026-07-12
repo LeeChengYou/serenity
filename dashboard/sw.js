@@ -1,6 +1,6 @@
 // Serenity Signal Service Worker
 // 版本字串：升版時更改此值以觸發 activate 清除舊快取
-const CACHE_VERSION = 'serenity-v4-uidock';
+const CACHE_VERSION = 'serenity-v5-local';
 
 // 安裝時預快取的靜態資產
 const STATIC_ASSETS = [
