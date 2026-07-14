@@ -53,3 +53,9 @@ data/app.db
 # 制度檔維護協議的備份副本（MAINTENANCE.md 第 2 節）
 *.bak
 *.bak-*
+
+# graphify 內部快取（不需 commit；graph.json / GRAPH_REPORT.md / graph.html 才是產出）
+graphify-out/.graphify_*
+graphify-out/cache/
+graphify-out/2026-*/
+graphify-build.log
