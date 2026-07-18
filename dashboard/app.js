@@ -3583,12 +3583,14 @@ document.addEventListener('click', function(e) {
 
 let _newsFeedCursor = null;
 let _newsFeedSymbol = '';
+let _newsFeedRegion = '';
 let _newsFeedLoaded = false;
 
 function loadNewsPage() {
   if (!_newsFeedLoaded) {
     _newsFeedCursor = null;
     _newsFeedSymbol = ($('newsFeedSymFilter') && $('newsFeedSymFilter').value.trim().toUpperCase()) || '';
+    _newsFeedRegion = ($('newsFeedRegionFilter') && $('newsFeedRegionFilter').value) || '';
     _newsFeedLoaded = true;
     _loadNewsFeed(true);
     _loadExpertViews();
@@ -3605,6 +3607,7 @@ async function _loadNewsFeed(reset) {
   }
   const params = new URLSearchParams({ limit: '50' });
   if (_newsFeedSymbol) params.set('symbol', _newsFeedSymbol);
+  if (_newsFeedRegion) params.set('region', _newsFeedRegion);
   if (_newsFeedCursor) params.set('before', _newsFeedCursor);
   try {
     const data = await fetch(`/api/news-feed?${params}`).then(r => r.json());
@@ -3647,6 +3650,7 @@ async function _loadNewsFeed(reset) {
 window.newsFeedFilterChanged = function() {
   _newsFeedLoaded = false;
   _newsFeedSymbol = (($('newsFeedSymFilter') && $('newsFeedSymFilter').value.trim().toUpperCase()) || '');
+  _newsFeedRegion = (($('newsFeedRegionFilter') && $('newsFeedRegionFilter').value) || '');
   _newsFeedLoaded = true;
   _loadNewsFeed(true);
 };
@@ -3654,7 +3658,10 @@ window.newsFeedFilterChanged = function() {
 window.newsFeedClearFilter = function() {
   const inp = $('newsFeedSymFilter');
   if (inp) { inp.value = ''; }
+  const sel = $('newsFeedRegionFilter');
+  if (sel) { sel.value = ''; }
   _newsFeedSymbol = '';
+  _newsFeedRegion = '';
   _loadNewsFeed(true);
 };
 

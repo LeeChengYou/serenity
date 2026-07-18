@@ -283,6 +283,7 @@ class Handler(SimpleHTTPRequestHandler):
                 limit = max(1, min(limit, 200))
                 symbol = (query.get("symbol") or [""])[0].strip().upper() or None
                 before = (query.get("before") or [""])[0].strip() or None
+                region = (query.get("region") or [""])[0].strip().lower()
                 params: list = []
                 where_clauses: list = []
                 if symbol:
@@ -291,6 +292,13 @@ class Handler(SimpleHTTPRequestHandler):
                 if before:
                     where_clauses.append("published_at < ?")
                     params.append(before)
+                if region == 'tw':
+                    where_clauses.append("source = 'Google News (台股)'")
+                elif region == 'us':
+                    where_clauses.append("source != 'Google News (台股)'")
+                    where_clauses.append("scope = 'symbol'")
+                elif region == 'macro':
+                    where_clauses.append("scope = 'macro'")
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 # fetch limit+1 to determine has_more
                 rows_raw = con.execute(

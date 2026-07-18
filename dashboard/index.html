@@ -322,6 +322,12 @@
           <input type="text" id="newsFeedSymFilter" placeholder="篩選代號（如 NVDA）"
                  style="padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;width:150px;"
                  oninput="newsFeedFilterChanged()" />
+          <select id="newsFeedRegionFilter" style="padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;" onchange="newsFeedFilterChanged()">
+            <option value="">全部</option>
+            <option value="tw">🇹🇼 台股新聞</option>
+            <option value="us">🇺🇸 美股新聞</option>
+            <option value="macro">🌍 宏觀新聞</option>
+          </select>
           <button style="font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:4px;background:transparent;cursor:pointer;"
                   onclick="newsFeedClearFilter()">✕ 清除</button>
         </div>
